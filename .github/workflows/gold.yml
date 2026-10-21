@@ -1,0 +1,35 @@
+name: gold-prices
+
+on:
+  schedule:
+    - cron: "*/10 6-16 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: gold
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Send prices
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          REQUEST_CURL: ${{ secrets.REQUEST_CURL }}
+          CHANNEL_ID: "@vahanzar"
+          FOOTER_TEXT: "@vahanzar"
+          BRAND_NAME: "وهان زر"
+          ABSHODE_DIVISOR: "4.3318"
+          START_HOUR: "10"
+          END_HOUR: "20"
+          DEMO: "0"
+          TZ: "Asia/Tehran"
+        run: python gold_bot.py --once --windowed
