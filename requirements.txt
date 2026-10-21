@@ -1,0 +1,6 @@
+Pillow>=10.0
+requests[socks]>=2.31
+arabic-reshaper>=3.0
+python-bidi>=0.4.2
+jdatetime>=4.1
+tzdata
