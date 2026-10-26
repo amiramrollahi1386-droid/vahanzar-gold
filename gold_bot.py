@@ -532,8 +532,7 @@ def send_good_morning():
     text = (f"☀️ صبح بخیر\n\n"
             f"امروز {days[j.weekday()]} {fa_digits(j.day)} {months[j.month-1]} {fa_digits(j.year)}\n\n"
             f"🌼 {BRAND_NAME} آماده‌ی خدمت‌رسانی به شماست.\n"
-            f"قیمت لحظه‌ای طلا و سکه از ساعت {fa_digits(START_HOUR)} تا {fa_digits(END_HOUR % 24 or 24)} "
-            f"هر {fa_digits(INTERVAL)} دقیقه در همین کانال 👇")
+            f"قیمت لحظه‌ای طلا و سکه از ساعت {fa_digits(START_HOUR)} تا {fa_digits(END_HOUR % 24 or 24)} 👇")
     if FOOTER_TEXT:
         text += f"\n\n{FOOTER_TEXT}"
     try:
