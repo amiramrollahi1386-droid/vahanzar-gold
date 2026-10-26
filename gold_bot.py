@@ -390,7 +390,8 @@ def dispatch_next_run():
         print("درخواست اجرای بعدی ناموفق:", e)
 
 # ───────────── گفت‌وگو با مدیر در تلگرام (دریافت cURL تازه) ─────────────
-ADMIN_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+ADMIN_ID = os.getenv("ADMIN_CHAT_ID", "").strip()   # اختیاری؛ اگر خالی باشد صاحب کانال مدیر است
+ADMIN_IDS = set()
 STORE_NAME = "panel_request.txt"
 _upd_offset = None
 _status = {"last_ok": None, "last_err": None}
@@ -402,6 +403,25 @@ def tg(method, files=None, **data):
     if not j.get("ok"):
         raise RuntimeError(f"Telegram {method}: {j.get('description')}")
     return j["result"]
+
+def resolve_admins():
+    """مدیر = ADMIN_CHAT_ID، یا اگر نبود، سازنده و ادمین‌های انسانی کانال."""
+    global ADMIN_ID
+    if ADMIN_ID:
+        ADMIN_IDS.add(ADMIN_ID); return
+    try:
+        for m in tg("getChatAdministrators", chat_id=CHANNEL_ID):
+            u = m.get("user", {})
+            if u.get("is_bot"):
+                continue
+            ADMIN_IDS.add(str(u["id"]))
+            if m.get("status") == "creator":
+                ADMIN_ID = str(u["id"])
+        if not ADMIN_ID and ADMIN_IDS:
+            ADMIN_ID = sorted(ADMIN_IDS)[0]
+        print(f"مدیرها از کانال پیدا شدند: {len(ADMIN_IDS)} نفر", flush=True)
+    except Exception as e:
+        print("پیدا کردن مدیر کانال ناموفق:", safe(e), flush=True)
 
 def say(text):
     if ADMIN_ID:
@@ -417,17 +437,20 @@ def tg_download(file_id):
 
 def load_saved_curl():
     """cURL ذخیره‌شده را از پیام سنجاق‌شده‌ی چت مدیر با ربات می‌خواند."""
-    if not ADMIN_ID:
-        return False
-    try:
-        pin = tg("getChat", chat_id=ADMIN_ID).get("pinned_message") or {}
-        doc = pin.get("document") or {}
-        if doc.get("file_name") == STORE_NAME:
-            os.environ["REQUEST_CURL"] = tg_download(doc["file_id"])
-            print("cURL ذخیره‌شده از تلگرام خوانده شد.", flush=True)
-            return True
-    except Exception as e:
-        print("خواندن cURL ذخیره‌شده ناموفق:", safe(e), flush=True)
+    global ADMIN_ID
+    for cid in [ADMIN_ID] + sorted(ADMIN_IDS - {ADMIN_ID}):
+        if not cid:
+            continue
+        try:
+            pin = tg("getChat", chat_id=cid).get("pinned_message") or {}
+            doc = pin.get("document") or {}
+            if doc.get("file_name") == STORE_NAME:
+                os.environ["REQUEST_CURL"] = tg_download(doc["file_id"])
+                ADMIN_ID = cid
+                print("cURL ذخیره‌شده از تلگرام خوانده شد.", flush=True)
+                return True
+        except Exception as e:
+            print("خواندن cURL ذخیره‌شده ناموفق:", safe(e), flush=True)
     return False
 
 def save_curl(text):
@@ -437,7 +460,7 @@ def save_curl(text):
     except Exception: pass
     tg("pinChatMessage", chat_id=ADMIN_ID, message_id=m["message_id"], disable_notification=True)
 
-def try_new_curl(text):
+def try_new_curl(text, who=None):
     old = os.environ.get("REQUEST_CURL")
     os.environ["REQUEST_CURL"] = text
     try:
@@ -455,8 +478,8 @@ def try_new_curl(text):
 
 def poll_admin():
     """پیام‌های مدیر را می‌خواند. اگر cURL جدید آمد و کار کرد، True برمی‌گرداند."""
-    global _upd_offset
-    if not ADMIN_ID:
+    global _upd_offset, ADMIN_ID
+    if not ADMIN_IDS:
         return False
     try:
         kw = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
@@ -464,11 +487,12 @@ def poll_admin():
         ups = tg("getUpdates", **kw)
     except Exception as e:
         print("خواندن پیام‌های تلگرام ناموفق:", safe(e), flush=True); return False
-    parts, got = [], False
+    parts, got, sender = [], False, None
     for u in ups:
         _upd_offset = u["update_id"] + 1
         m = u.get("message") or {}
-        if str(m.get("chat", {}).get("id")) != ADMIN_ID:
+        cid = str(m.get("chat", {}).get("id"))
+        if m.get("chat", {}).get("type") != "private" or cid not in ADMIN_IDS:
             continue
         txt = m.get("text") or ""
         doc = m.get("document")
@@ -476,7 +500,7 @@ def poll_admin():
             try: txt = tg_download(doc["file_id"])
             except Exception as e: say("❌ فایل خوانده نشد: " + safe(e)[:200]); continue
         if txt.lstrip().lower().startswith("curl"):
-            parts = [txt]                       # شروع یک cURL تازه
+            parts, sender = [txt], cid                       # شروع یک cURL تازه
         elif parts and not txt.startswith("/"):
             parts.append(txt)                   # تکه‌های بعدی وقتی تلگرام متن بلند را چند پیام کرده
         elif txt.startswith("/status"):
@@ -485,6 +509,7 @@ def poll_admin():
             say("سلام! وقتی لاگین پنل منقضی شد، متن «Copy as cURL (bash)» درخواست products را همین‌جا بفرستید "
                 "(یا به‌صورت فایل txt). /status وضعیت را می‌گوید.")
     if parts:
+        ADMIN_ID = sender or ADMIN_ID          # پیام‌ها و ذخیره در چت همان مدیری که کد را فرستاد
         got = try_new_curl("\n".join(parts))
     return got
 
@@ -500,8 +525,9 @@ def sleep_until(t):
 def run_loop(max_minutes):
     """برای سرور: داخل یک اجرا، سر هر INTERVAL دقیقه دقیقاً ارسال می‌کند."""
     deadline = datetime.now(TZ) + timedelta(minutes=max_minutes)
-    if not ADMIN_ID:
-        gh("warning", "ADMIN_CHAT_ID تنظیم نشده؛ دریافت کد جدید از تلگرام خاموش است.")
+    resolve_admins()
+    if not ADMIN_IDS:
+        gh("warning", "مدیری پیدا نشد؛ دریافت کد جدید از تلگرام خاموش است.")
     load_saved_curl()
     now = datetime.now(TZ)
     if not in_window(now):
