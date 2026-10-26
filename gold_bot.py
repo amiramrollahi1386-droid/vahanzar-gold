@@ -369,29 +369,11 @@ def gh(level, msg):
     else:
         print(safe(msg), flush=True)
 
-def alert_admin(text):
-    chat = os.getenv("ADMIN_CHAT_ID", "").strip()
-    if not chat:
-        return
-    try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      data={"chat_id": chat, "text": "⚠️ ربات قیمت وهان زر:\n" + text}, timeout=20,
-                      proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None)
-    except Exception:
-        pass
-
 def next_slot(now):
     """نوبت بعدی ارسال، روی مضرب‌های INTERVAL دقیقه (مثلاً ۱۰:۰۰، ۱۰:۱۰، ...)."""
     base = now.replace(second=0, microsecond=0)
     m = (base.minute // INTERVAL + 1) * INTERVAL
     return base.replace(minute=0) + timedelta(minutes=m)
-
-def sleep_until(t):
-    while True:
-        left = (t - datetime.now(TZ)).total_seconds()
-        if left <= 0:
-            return
-        time.sleep(min(left, 60))
 
 def dispatch_next_run():
     """درخواست اجرای بعدی workflow (برای ادامه‌ی بی‌وقفه بعد از سقف ۶ ساعته‌ی گیت‌هاب)."""
@@ -407,38 +389,169 @@ def dispatch_next_run():
     except Exception as e:
         print("درخواست اجرای بعدی ناموفق:", e)
 
+# ───────────── گفت‌وگو با مدیر در تلگرام (دریافت cURL تازه) ─────────────
+ADMIN_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+STORE_NAME = "panel_request.txt"
+_upd_offset = None
+_status = {"last_ok": None, "last_err": None}
+
+def tg(method, files=None, **data):
+    r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}", data=data, files=files, timeout=40,
+                      proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None)
+    j = r.json()
+    if not j.get("ok"):
+        raise RuntimeError(f"Telegram {method}: {j.get('description')}")
+    return j["result"]
+
+def say(text):
+    if ADMIN_ID:
+        try: tg("sendMessage", chat_id=ADMIN_ID, text=text)
+        except Exception as e: print("ارسال پیام به مدیر ناموفق:", safe(e))
+
+def tg_download(file_id):
+    path = tg("getFile", file_id=file_id)["file_path"]
+    r = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{path}", timeout=40,
+                     proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None)
+    r.raise_for_status()
+    return r.content.decode("utf-8-sig", "replace")
+
+def load_saved_curl():
+    """cURL ذخیره‌شده را از پیام سنجاق‌شده‌ی چت مدیر با ربات می‌خواند."""
+    if not ADMIN_ID:
+        return False
+    try:
+        pin = tg("getChat", chat_id=ADMIN_ID).get("pinned_message") or {}
+        doc = pin.get("document") or {}
+        if doc.get("file_name") == STORE_NAME:
+            os.environ["REQUEST_CURL"] = tg_download(doc["file_id"])
+            print("cURL ذخیره‌شده از تلگرام خوانده شد.", flush=True)
+            return True
+    except Exception as e:
+        print("خواندن cURL ذخیره‌شده ناموفق:", safe(e), flush=True)
+    return False
+
+def save_curl(text):
+    m = tg("sendDocument", chat_id=ADMIN_ID, caption="🔐 درخواست پنل ذخیره شد. این پیام را از سنجاق برندارید.",
+           files={"document": (STORE_NAME, text.encode("utf-8"), "text/plain")})
+    try: tg("unpinAllChatMessages", chat_id=ADMIN_ID)
+    except Exception: pass
+    tg("pinChatMessage", chat_id=ADMIN_ID, message_id=m["message_id"], disable_notification=True)
+
+def try_new_curl(text):
+    old = os.environ.get("REQUEST_CURL")
+    os.environ["REQUEST_CURL"] = text
+    try:
+        prices = fetch_prices()
+        n = sum(1 for v in prices.values() if v.get("sell") or v.get("buy"))
+        if not n:
+            raise RuntimeError("قیمتی در جواب پیدا نشد؛ مطمئن شوید cURL مال درخواست products است.")
+    except Exception as e:
+        if old is not None: os.environ["REQUEST_CURL"] = old
+        say("❌ این کد کار نکرد:\n" + safe(e)[:400])
+        return False
+    save_curl(text)
+    say(f"✅ کد جدید ذخیره شد و کار می‌کند ({n} قیمت خوانده شد). ارسال‌ها ادامه پیدا می‌کند.")
+    return True
+
+def poll_admin():
+    """پیام‌های مدیر را می‌خواند. اگر cURL جدید آمد و کار کرد، True برمی‌گرداند."""
+    global _upd_offset
+    if not ADMIN_ID:
+        return False
+    try:
+        kw = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
+        if _upd_offset is not None: kw["offset"] = _upd_offset
+        ups = tg("getUpdates", **kw)
+    except Exception as e:
+        print("خواندن پیام‌های تلگرام ناموفق:", safe(e), flush=True); return False
+    parts, got = [], False
+    for u in ups:
+        _upd_offset = u["update_id"] + 1
+        m = u.get("message") or {}
+        if str(m.get("chat", {}).get("id")) != ADMIN_ID:
+            continue
+        txt = m.get("text") or ""
+        doc = m.get("document")
+        if doc and doc.get("file_size", 0) < 200_000:
+            try: txt = tg_download(doc["file_id"])
+            except Exception as e: say("❌ فایل خوانده نشد: " + safe(e)[:200]); continue
+        if txt.lstrip().lower().startswith("curl"):
+            parts = [txt]                       # شروع یک cURL تازه
+        elif parts and not txt.startswith("/"):
+            parts.append(txt)                   # تکه‌های بعدی وقتی تلگرام متن بلند را چند پیام کرده
+        elif txt.startswith("/status"):
+            say(f"آخرین ارسال موفق: {_status['last_ok'] or '—'}\nآخرین خطا: {_status['last_err'] or '—'}")
+        elif txt.startswith("/start") or txt:
+            say("سلام! وقتی لاگین پنل منقضی شد، متن «Copy as cURL (bash)» درخواست products را همین‌جا بفرستید "
+                "(یا به‌صورت فایل txt). /status وضعیت را می‌گوید.")
+    if parts:
+        got = try_new_curl("\n".join(parts))
+    return got
+
+def sleep_until(t):
+    """تا زمان t صبر می‌کند و در این مدت هر دقیقه پیام‌های مدیر را چک می‌کند."""
+    while True:
+        poll_admin()
+        left = (t - datetime.now(TZ)).total_seconds()
+        if left <= 0:
+            return
+        time.sleep(min(left, 60))
+
 def run_loop(max_minutes):
     """برای سرور: داخل یک اجرا، سر هر INTERVAL دقیقه دقیقاً ارسال می‌کند."""
     deadline = datetime.now(TZ) + timedelta(minutes=max_minutes)
+    if not ADMIN_ID:
+        gh("warning", "ADMIN_CHAT_ID تنظیم نشده؛ دریافت کد جدید از تلگرام خاموش است.")
+    load_saved_curl()
     now = datetime.now(TZ)
     if not in_window(now):
         start = next_start(now)
         if start > deadline - timedelta(minutes=30):
-            print("خارج از ساعت کاری؛ کاری برای انجام نیست."); return 0
+            poll_admin(); print("خارج از ساعت کاری؛ کاری برای انجام نیست."); return 0
         print("منتظر شروع ساعت کاری:", start.strftime("%H:%M"), flush=True)
         sleep_until(start)
 
-    prev, fails = None, 0
+    prev, fails, waiting_auth = None, 0, False
     while True:
         now = datetime.now(TZ)
         if not in_window(now):
             print("پایان ساعت کاری.", flush=True); return 0
+        if waiting_auth:
+            # منتظر کد جدید از مدیر؛ هر دقیقه چک می‌شود
+            if poll_admin():
+                waiting_auth = False
+                continue
+            if datetime.now(TZ) + timedelta(minutes=1) > deadline:
+                dispatch_next_run(); return 0
+            time.sleep(60); continue
         for attempt in range(3):
             try:
                 prev = run_once(prev)
-                print(datetime.now(TZ).strftime("%H:%M"), "ارسال شد ✔", flush=True)
+                _status["last_ok"] = datetime.now(TZ).strftime("%H:%M")
+                print(_status["last_ok"], "ارسال شد ✔", flush=True)
                 fails = 0
                 break
             except AuthError as e:
-                gh("error", str(e)); alert_admin(str(e)); return 1
+                _status["last_err"] = str(e)
+                gh("warning", str(e))
+                if not ADMIN_ID:
+                    gh("error", str(e)); return 1
+                say("⚠️ لاگین پنل منقضی شد و ارسال قیمت‌ها متوقف است.\n"
+                    "پنل را باز کنید، F12 ← Network ← درخواست products ← Copy as cURL (bash) "
+                    "و متنش را همین‌جا بفرستید. بلافاصله ادامه می‌دهم.")
+                waiting_auth = True
+                break
             except Exception as e:
+                _status["last_err"] = safe(e)[:300]
                 gh("warning", f"تلاش {attempt + 1} ناموفق: {e}")
                 time.sleep(45)
         else:
             fails += 1
-            if fails >= 6:                      # یک ساعت پشت سر هم خطا
-                msg = f"یک ساعت است ارسال انجام نمی‌شود. آخرین خطا در صفحه‌ی Actions."
-                gh("error", msg); alert_admin(msg); return 1
+            if fails >= 6:
+                msg = "یک ساعت است ارسال انجام نمی‌شود. آخرین خطا: " + (_status["last_err"] or "")
+                gh("error", msg); say("⚠️ " + msg); return 1
+        if waiting_auth:
+            continue
         nxt = next_slot(datetime.now(TZ))
         if nxt > deadline:
             print("سقف زمان این اجرا رسید؛ اجرای بعدی ادامه می‌دهد.", flush=True)
