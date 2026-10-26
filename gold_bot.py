@@ -522,6 +522,26 @@ def sleep_until(t):
             return
         time.sleep(min(left, 60))
 
+GOOD_MORNING = os.getenv("GOOD_MORNING", "1") == "1"
+
+def send_good_morning():
+    now = datetime.now(TZ)
+    j = jdatetime.datetime.fromgregorian(datetime=now)
+    days = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه"]
+    months = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
+    text = (f"☀️ صبح بخیر\n\n"
+            f"امروز {days[j.weekday()]} {fa_digits(j.day)} {months[j.month-1]} {fa_digits(j.year)}\n\n"
+            f"🌼 {BRAND_NAME} آماده‌ی خدمت‌رسانی به شماست.\n"
+            f"قیمت لحظه‌ای طلا و سکه از ساعت {fa_digits(START_HOUR)} تا {fa_digits(END_HOUR % 24 or 24)} "
+            f"هر {fa_digits(INTERVAL)} دقیقه در همین کانال 👇")
+    if FOOTER_TEXT:
+        text += f"\n\n{FOOTER_TEXT}"
+    try:
+        tg("sendMessage", chat_id=CHANNEL_ID, text=text)
+        print("پیام صبح بخیر ارسال شد ✔", flush=True)
+    except Exception as e:
+        gh("warning", f"پیام صبح بخیر ارسال نشد: {e}")
+
 def run_loop(max_minutes):
     """برای سرور: داخل یک اجرا، سر هر INTERVAL دقیقه دقیقاً ارسال می‌کند."""
     deadline = datetime.now(TZ) + timedelta(minutes=max_minutes)
@@ -550,6 +570,11 @@ def run_loop(max_minutes):
             if datetime.now(TZ) + timedelta(minutes=1) > deadline:
                 dispatch_next_run(); return 0
             time.sleep(60); continue
+        # فقط در اولین نوبت روز (مثلاً ۱۰:۰۰ تا ۱۰:۰۹) و فقط یک‌بار در هر اجرا
+        if GOOD_MORNING and not _status.get("gm") and now.hour == START_HOUR and now.minute < INTERVAL:
+            _status["gm"] = True
+            send_good_morning()
+            time.sleep(3)
         for attempt in range(3):
             try:
                 prev = run_once(prev)
