@@ -7,6 +7,7 @@
     python gold_bot.py            # اجرای دائمی (ارسال هر N دقیقه)
     python gold_bot.py --once     # فقط یک‌بار ارسال
     python gold_bot.py --preview  # فقط ساخت عکس preview.png (بدون ارسال)
+    python gold_bot.py --loop 340 # روی سرور: ارسال دقیق هر N دقیقه تا ۳۴۰ دقیقه
 """
 import io, os, sys, socket, json, time, random, shlex, logging
 from datetime import datetime, timedelta
@@ -113,6 +114,9 @@ def parse_curl(path="request.txt"):
         raise RuntimeError("آدرس در request.txt پیدا نشد؛ دوباره Copy as cURL (bash) را بزنید.")
     return url, method or ("POST" if body else "GET"), headers, body
 
+class AuthError(RuntimeError):
+    """توکن ورود پنل منقضی/نامعتبر است."""
+
 def fetch_prices():
     if os.getenv("REQUEST_CURL"):                       # روی سرور: cURL از Secret خوانده می‌شود
         open("request.txt", "w", encoding="utf-8").write(os.environ["REQUEST_CURL"])
@@ -137,10 +141,16 @@ def fetch_prices():
     elif os.path.exists("request.txt"):                     # روش ساده: cURL کپی‌شده از مرورگر
         url, method, headers, body = parse_curl("request.txt")
         r = requests.request(method, url, headers=headers, data=body, timeout=20)
-        if r.status_code in (401, 403):
-            raise RuntimeError("دسترسی رد شد (توکن منقضی شده). cURL تازه را در request.txt بگذارید.")
-        r.raise_for_status()
-        data = r.json()
+        if r.status_code in (401, 403, 419):
+            raise AuthError(f"پنل دسترسی را رد کرد (HTTP {r.status_code}): توکن ورود منقضی شده؛ "
+                            "cURL تازه‌ی درخواست products را در Secret به نام REQUEST_CURL بگذارید.")
+        if r.status_code >= 400:
+            raise RuntimeError(f"پنل خطا داد: HTTP {r.status_code}")
+        try:
+            data = r.json()
+        except ValueError:
+            raise AuthError(f"پنل به‌جای قیمت‌ها صفحه‌ی دیگری داد (HTTP {r.status_code}, "
+                            f"{r.headers.get('content-type','?')}); احتمالاً توکن ورود منقضی شده.")
     else:
         headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
         if os.getenv("PRICE_API_AUTH"):   headers["Authorization"] = os.getenv("PRICE_API_AUTH")
@@ -352,19 +362,106 @@ def single_instance():
     except OSError:
         print("ربات از قبل در حال اجراست."); sys.exit(0)
 
+def gh(level, msg):
+    """نمایش خطا/هشدار در صفحه‌ی Actions گیت‌هاب."""
+    if os.getenv("GITHUB_ACTIONS"):
+        print(f"::{level}::" + safe(msg).replace("%", "%25").replace("\n", "%0A"), flush=True)
+    else:
+        print(safe(msg), flush=True)
+
+def alert_admin(text):
+    chat = os.getenv("ADMIN_CHAT_ID", "").strip()
+    if not chat:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      data={"chat_id": chat, "text": "⚠️ ربات قیمت وهان زر:\n" + text}, timeout=20,
+                      proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None)
+    except Exception:
+        pass
+
+def next_slot(now):
+    """نوبت بعدی ارسال، روی مضرب‌های INTERVAL دقیقه (مثلاً ۱۰:۰۰، ۱۰:۱۰، ...)."""
+    base = now.replace(second=0, microsecond=0)
+    m = (base.minute // INTERVAL + 1) * INTERVAL
+    return base.replace(minute=0) + timedelta(minutes=m)
+
+def sleep_until(t):
+    while True:
+        left = (t - datetime.now(TZ)).total_seconds()
+        if left <= 0:
+            return
+        time.sleep(min(left, 60))
+
+def dispatch_next_run():
+    """درخواست اجرای بعدی workflow (برای ادامه‌ی بی‌وقفه بعد از سقف ۶ ساعته‌ی گیت‌هاب)."""
+    tok, repo = os.getenv("GITHUB_TOKEN"), os.getenv("GITHUB_REPOSITORY")
+    wf, ref = os.getenv("GH_WORKFLOW_FILE", "gold.yml"), os.getenv("GITHUB_REF_NAME", "main")
+    if not (tok and repo):
+        return
+    try:
+        r = requests.post(f"https://api.github.com/repos/{repo}/actions/workflows/{wf}/dispatches",
+                          headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+                          json={"ref": ref}, timeout=20)
+        print("اجرای بعدی درخواست شد." if r.status_code == 204 else f"درخواست اجرای بعدی ناموفق: {r.status_code}")
+    except Exception as e:
+        print("درخواست اجرای بعدی ناموفق:", e)
+
+def run_loop(max_minutes):
+    """برای سرور: داخل یک اجرا، سر هر INTERVAL دقیقه دقیقاً ارسال می‌کند."""
+    deadline = datetime.now(TZ) + timedelta(minutes=max_minutes)
+    now = datetime.now(TZ)
+    if not in_window(now):
+        start = next_start(now)
+        if start > deadline - timedelta(minutes=30):
+            print("خارج از ساعت کاری؛ کاری برای انجام نیست."); return 0
+        print("منتظر شروع ساعت کاری:", start.strftime("%H:%M"), flush=True)
+        sleep_until(start)
+
+    prev, fails = None, 0
+    while True:
+        now = datetime.now(TZ)
+        if not in_window(now):
+            print("پایان ساعت کاری.", flush=True); return 0
+        for attempt in range(3):
+            try:
+                prev = run_once(prev)
+                print(datetime.now(TZ).strftime("%H:%M"), "ارسال شد ✔", flush=True)
+                fails = 0
+                break
+            except AuthError as e:
+                gh("error", str(e)); alert_admin(str(e)); return 1
+            except Exception as e:
+                gh("warning", f"تلاش {attempt + 1} ناموفق: {e}")
+                time.sleep(45)
+        else:
+            fails += 1
+            if fails >= 6:                      # یک ساعت پشت سر هم خطا
+                msg = f"یک ساعت است ارسال انجام نمی‌شود. آخرین خطا در صفحه‌ی Actions."
+                gh("error", msg); alert_admin(msg); return 1
+        nxt = next_slot(datetime.now(TZ))
+        if nxt > deadline:
+            print("سقف زمان این اجرا رسید؛ اجرای بعدی ادامه می‌دهد.", flush=True)
+            dispatch_next_run(); return 0
+        sleep_until(nxt)
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if "--preview" in sys.argv:
         data = render(fetch_prices()).read()
         open("preview.png", "wb").write(data)
         print("preview.png ساخته شد"); return
+    if "--loop" in sys.argv:
+        i = sys.argv.index("--loop")
+        mins = int(sys.argv[i + 1]) if i + 1 < len(sys.argv) else 340
+        sys.exit(run_loop(mins))
     if "--once" in sys.argv:
         if "--windowed" in sys.argv and not in_window(datetime.now(TZ)):
             print("خارج از ساعت کاری؛ ارسال نشد."); return
         try:
             run_once(None); print("ارسال شد ✔")
         except Exception as e:
-            print("خطا:", safe(e)); sys.exit(1)
+            gh("error", f"خطا: {e}"); sys.exit(1)
         return
 
     single_instance()

@@ -1,21 +1,28 @@
 name: gold-prices
 
+# هر اجرا تا حدود ۵:۴۰ ساعت داخل خودش دقیقاً هر ۱۰ دقیقه ارسال می‌کند.
+# زمان‌بندی‌های زیر فقط برای «روشن کردن» اجراست (گیت‌هاب این‌ها را دیر و نامنظم اجرا می‌کند).
+# ۵:۰۷ UTC = ۸:۳۷ تهران؛ ربات تا ساعت ۱۰ صبر می‌کند و ۱۰:۰۰ اولین عکس را می‌فرستد.
 on:
   schedule:
-    - cron: "*/10 6-16 * * *"
+    - cron: "7,37 5-16 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write          # برای درخواست اجرای بعدی بعد از سقف ۶ ساعته
 
 concurrency:
   group: gold
-  cancel-in-progress: false
+  cancel-in-progress: false   # هم‌زمان فقط یک اجرا؛ بقیه در صف می‌مانند
 
 jobs:
   send:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -24,12 +31,15 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           REQUEST_CURL: ${{ secrets.REQUEST_CURL }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          GITHUB_TOKEN: ${{ github.token }}
           CHANNEL_ID: "@vahanzar"
           FOOTER_TEXT: "@vahanzar"
           BRAND_NAME: "وهان زر"
           ABSHODE_DIVISOR: "4.3318"
+          INTERVAL_MINUTES: "10"
           START_HOUR: "10"
           END_HOUR: "20"
           DEMO: "0"
           TZ: "Asia/Tehran"
-        run: python gold_bot.py --once --windowed
+        run: python gold_bot.py --loop 340
