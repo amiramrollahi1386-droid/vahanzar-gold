@@ -117,7 +117,35 @@ def parse_curl(path="request.txt"):
 class AuthError(RuntimeError):
     """توکن ورود پنل منقضی/نامعتبر است."""
 
+# ── منبع قیمت: سایت وهان زر (Supabase) ──
+PRICE_SOURCE = os.getenv("PRICE_SOURCE", "panel")          # site | panel
+SITE_API     = os.getenv("SITE_API_URL", "")               # https://xxxx.supabase.co
+SITE_KEY     = os.getenv("SITE_API_KEY", "")               # کلید عمومی (publishable)؛ محرمانه نیست
+SITE_MAP = {"gold_farda": ("ابشده نقد فردایی", "gram"), "gold_pasfarda": ("آبشده نقد پسفردایی", "gram"),
+            "emami": ("تمام سکه ۸۶", "number"), "emami_old": ("تمام سکه تاریخ پایین", "number"),
+            "nim": ("نیم سکه ۸۶", "number"), "rob": ("ربع سکه ۸۶", "number")}
+
+def fetch_site_prices():
+    r = requests.post(f"{SITE_API.rstrip('/')}/rest/v1/rpc/channel_prices",
+                      headers={"apikey": SITE_KEY, "Content-Type": "application/json"}, json={}, timeout=20)
+    if r.status_code >= 400:
+        raise RuntimeError(f"سایت خطا داد: HTTP {r.status_code}")
+    d = r.json()
+    if d.get("stale"):
+        raise RuntimeError("قیمت‌های سایت به‌روز نیستند (فید قیمت سایت متوقف شده)؛ عکس ارسال نشد.")
+    out = {}
+    for code, (title, unit) in SITE_MAP.items():
+        v = (d.get("items") or {}).get(code) or {}
+        sell, buy = _to_int(v.get("sell")), _to_int(v.get("buy"))
+        if sell or buy:
+            out[norm(title)] = {"unit": unit, "sell": sell, "buy": buy}
+    if not out:
+        raise RuntimeError("سایت قیمتی برنگرداند.")
+    return out
+
 def fetch_prices():
+    if PRICE_SOURCE == "site" and not DEMO:
+        return fetch_site_prices()
     if os.getenv("REQUEST_CURL"):                       # روی سرور: cURL از Secret خوانده می‌شود
         open("request.txt", "w", encoding="utf-8").write(os.environ["REQUEST_CURL"])
     """
@@ -330,16 +358,24 @@ def render(prices, prev=None, now=None):
 # ── رشد کانال: دکمه‌ی «ارسال برای دوستان» و لینک عضویت زیر پست‌ها ──
 from urllib.parse import quote
 SHARE_BUTTON = os.getenv("SHARE_BUTTON", "1") == "1"
+SITE_URL     = os.getenv("SITE_URL", "")                      # دکمه‌ی «خرید آنلاین»
 CHANNEL_LINK = os.getenv("CHANNEL_LINK") or (f"https://t.me/{CHANNEL_ID.lstrip('@')}" if CHANNEL_ID.startswith("@") else "")
 SHARE_TEXT = os.getenv("SHARE_TEXT", f"قیمت لحظه‌ای طلا، آبشده و سکه در کانال {BRAND_NAME} 👇")
 PHOTO_CAPTION = os.getenv("PHOTO_CAPTION",
-    f"📊 قیمت لحظه‌ای طلا و سکه | {BRAND_NAME}" + (f"\n🔗 عضویت در کانال: {CHANNEL_LINK}" if CHANNEL_LINK else ""))
+    f"📊 قیمت لحظه‌ای طلا و سکه | {BRAND_NAME}"
+    + (f"\n🛒 خرید و فروش آنلاین با همین قیمت‌ها: {SITE_URL}" if SITE_URL else "")
+    + (f"\n🔗 عضویت در کانال: {CHANNEL_LINK}" if CHANNEL_LINK else ""))
 
 def share_markup():
-    if not (SHARE_BUTTON and CHANNEL_LINK):
+    if not ((SHARE_BUTTON and CHANNEL_LINK) or SITE_URL):
         return None
+    if not (SHARE_BUTTON and CHANNEL_LINK):
+        return json.dumps({"inline_keyboard": [[{"text": "🛒 خرید آنلاین", "url": SITE_URL}]]}, ensure_ascii=False)
     url = f"https://t.me/share/url?url={quote(CHANNEL_LINK)}&text={quote(SHARE_TEXT)}"
-    return json.dumps({"inline_keyboard": [[{"text": "📤 ارسال کانال برای دوستان", "url": url}]]}, ensure_ascii=False)
+    row = [{"text": "📤 ارسال برای دوستان", "url": url}]
+    if SITE_URL:
+        row.insert(0, {"text": "🛒 خرید آنلاین", "url": SITE_URL})
+    return json.dumps({"inline_keyboard": [row]}, ensure_ascii=False)
 
 def send_photo(png, caption=None):
     data = {"chat_id": CHANNEL_ID, "caption": PHOTO_CAPTION if caption is None else caption}

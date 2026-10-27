@@ -37,6 +37,11 @@ jobs:
           FOOTER_TEXT: "@vahanzar"
           BRAND_NAME: "وهان زر"
           ABSHODE_DIVISOR: "4.3318"
+          # قیمت‌ها از سایت وهان زر خوانده می‌شود (همان قیمت سفارش آنلاین). برای برگشت به پنل: panel
+          PRICE_SOURCE: "site"
+          SITE_URL: "https://vahan-zar.vercel.app"
+          SITE_API_URL: "https://jquffpllnzbuhiyfrori.supabase.co"
+          SITE_API_KEY: "sb_publishable_tEr6QjE51hNCRxTkOAf-NA_iy2_78La"   # کلید عمومی سایت؛ محرمانه نیست
           INTERVAL_MINUTES: "10"
           START_HOUR: "10"
           END_HOUR: "20"
