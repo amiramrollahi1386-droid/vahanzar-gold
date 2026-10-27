@@ -327,10 +327,27 @@ def render(prices, prev=None, now=None):
     return out
 
 # ───────────────────── ارسال به تلگرام ─────────────────────
-def send_photo(png, caption=""):
+# ── رشد کانال: دکمه‌ی «ارسال برای دوستان» و لینک عضویت زیر پست‌ها ──
+from urllib.parse import quote
+SHARE_BUTTON = os.getenv("SHARE_BUTTON", "1") == "1"
+CHANNEL_LINK = os.getenv("CHANNEL_LINK") or (f"https://t.me/{CHANNEL_ID.lstrip('@')}" if CHANNEL_ID.startswith("@") else "")
+SHARE_TEXT = os.getenv("SHARE_TEXT", f"قیمت لحظه‌ای طلا، آبشده و سکه در کانال {BRAND_NAME} 👇")
+PHOTO_CAPTION = os.getenv("PHOTO_CAPTION",
+    f"📊 قیمت لحظه‌ای طلا و سکه | {BRAND_NAME}" + (f"\n🔗 عضویت در کانال: {CHANNEL_LINK}" if CHANNEL_LINK else ""))
+
+def share_markup():
+    if not (SHARE_BUTTON and CHANNEL_LINK):
+        return None
+    url = f"https://t.me/share/url?url={quote(CHANNEL_LINK)}&text={quote(SHARE_TEXT)}"
+    return json.dumps({"inline_keyboard": [[{"text": "📤 ارسال کانال برای دوستان", "url": url}]]}, ensure_ascii=False)
+
+def send_photo(png, caption=None):
+    data = {"chat_id": CHANNEL_ID, "caption": PHOTO_CAPTION if caption is None else caption}
+    if share_markup():
+        data["reply_markup"] = share_markup()
     r = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-        data={"chat_id": CHANNEL_ID, "caption": caption},
+        data=data,
         files={"photo": ("gold.png", png, "image/png")}, timeout=60,
         proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None)
     r.raise_for_status()
@@ -528,7 +545,7 @@ GOOD_MORNING = os.getenv("GOOD_MORNING", "1") == "1"
 import content
 ALERT_PCT  = float(os.getenv("ALERT_PCT", "0.5"))     # هشدار تغییر محسوس قیمت (درصد نسبت به نوبت قبل)
 DATA_FILE  = "data/day.json"                          # قیمت باز و بسته‌ی روز (عمومی است، محرمانه نیست)
-SCHEDULE   = [(12, 0, "tip"), (14, 0, "quiz"), (17, 0, "poll"),
+SCHEDULE   = [(12, 0, "tip"), (14, 0, "quiz"), (17, 0, "poll"), (18, 30, "invite"),
               ((END_HOUR - 1) % 24, 60 - INTERVAL, "summary")]       # ساعت تهران
 DAYS   = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه"]
 MONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
@@ -538,9 +555,14 @@ def fa_date(now):
     return f"{DAYS[j.weekday()]} {fa_digits(j.day)} {MONTHS[j.month-1]} {fa_digits(j.year)}"
 
 def foot(text):
-    return text + (f"\n\n{FOOTER_TEXT}" if FOOTER_TEXT else "")
+    tail = FOOTER_TEXT or ""
+    if CHANNEL_LINK:
+        tail = f"🔗 {BRAND_NAME} | عضویت: {CHANNEL_LINK}"
+    return text + (f"\n\n{tail}" if tail else "")
 
 def post(method, what, **kw):
+    if share_markup() and "reply_markup" not in kw:
+        kw["reply_markup"] = share_markup()
     try:
         tg(method, chat_id=CHANNEL_ID, **kw)
         print(f"{what} ارسال شد ✔", flush=True)
@@ -640,6 +662,15 @@ def send_poll(now):
     post("sendPoll", "نظرسنجی", question=f"📊 {q}",
          options=json.dumps([{"text": o} for o in opts], ensure_ascii=False), is_anonymous=True)
 
+def send_invite(now):
+    """هفته‌ای یک‌بار (پنجشنبه) دعوت از اعضا برای معرفی کانال به دیگران."""
+    if now.weekday() != 3:      # ۳ = پنجشنبه
+        return
+    text = ("🤝 اگه قیمت‌های لحظه‌ای و نکته‌های کانال براتون مفیده،\n"
+            "لطفاً کانال رو برای خانواده و دوستانی که اهل خرید طلا هستن بفرستید.\n\n"
+            "با زدن دکمه‌ی پایین، در یک لحظه می‌تونید کانال رو براشون ارسال کنید 👇")
+    post("sendMessage", "دعوت هفتگی", text=foot(text))
+
 def send_summary(prices, now):
     op = data().get("open") or {}
     base = op.get("prices") if op.get("date") == now.date().isoformat() else None
@@ -686,6 +717,7 @@ def after_photo(prev, prices, now):
         if kind == "tip":       send_tip(now)
         elif kind == "quiz":    send_quiz(now)
         elif kind == "poll":    send_poll(now)
+        elif kind == "invite":  send_invite(now)
         elif kind == "summary": send_summary(prices, now)
 
 def run_loop(max_minutes):
