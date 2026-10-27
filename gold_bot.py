@@ -9,7 +9,7 @@
     python gold_bot.py --preview  # فقط ساخت عکس preview.png (بدون ارسال)
     python gold_bot.py --loop 340 # روی سرور: ارسال دقیق هر N دقیقه تا ۳۴۰ دقیقه
 """
-import io, os, sys, socket, json, time, random, shlex, logging
+import io, os, sys, socket, json, base64, time, random, shlex, logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -524,22 +524,169 @@ def sleep_until(t):
 
 GOOD_MORNING = os.getenv("GOOD_MORNING", "1") == "1"
 
-def send_good_morning():
-    now = datetime.now(TZ)
+# ───────────────────── محتوای متنوع کانال ─────────────────────
+import content
+ALERT_PCT  = float(os.getenv("ALERT_PCT", "0.5"))     # هشدار تغییر محسوس قیمت (درصد نسبت به نوبت قبل)
+DATA_FILE  = "data/day.json"                          # قیمت باز و بسته‌ی روز (عمومی است، محرمانه نیست)
+SCHEDULE   = [(12, 0, "tip"), (14, 0, "quiz"), (17, 0, "poll"),
+              ((END_HOUR - 1) % 24, 60 - INTERVAL, "summary")]       # ساعت تهران
+DAYS   = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه"]
+MONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
+
+def fa_date(now):
     j = jdatetime.datetime.fromgregorian(datetime=now)
-    days = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه"]
-    months = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
-    text = (f"☀️ صبح بخیر\n\n"
-            f"امروز {days[j.weekday()]} {fa_digits(j.day)} {months[j.month-1]} {fa_digits(j.year)}\n\n"
+    return f"{DAYS[j.weekday()]} {fa_digits(j.day)} {MONTHS[j.month-1]} {fa_digits(j.year)}"
+
+def foot(text):
+    return text + (f"\n\n{FOOTER_TEXT}" if FOOTER_TEXT else "")
+
+def post(method, what, **kw):
+    try:
+        tg(method, chat_id=CHANNEL_ID, **kw)
+        print(f"{what} ارسال شد ✔", flush=True)
+    except Exception as e:
+        gh("warning", f"{what} ارسال نشد: {e}")
+
+def in_slot(now, h, m):
+    t = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    return t <= now < t + timedelta(minutes=INTERVAL)
+
+def today_index(now, n):
+    return now.date().toordinal() % n
+
+# ── نگهداری قیمت باز/بسته‌ی روز ──
+def load_data():
+    try:
+        return json.load(open(DATA_FILE, encoding="utf-8"))
+    except Exception:
+        return {}
+
+_data = None
+def data():
+    global _data
+    if _data is None:
+        _data = load_data()
+    return _data
+
+def save_data(why):
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    raw = json.dumps(data(), ensure_ascii=False, indent=1)
+    open(DATA_FILE, "w", encoding="utf-8").write(raw)
+    tok, repo = os.getenv("GITHUB_TOKEN"), os.getenv("GITHUB_REPOSITORY")
+    if not (tok and repo):
+        return
+    url = f"https://api.github.com/repos/{repo}/contents/{DATA_FILE}"
+    h = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
+    try:
+        ref = os.getenv("GITHUB_REF_NAME", "main")
+        cur = requests.get(url, headers=h, params={"ref": ref}, timeout=20)
+        body = {"message": f"data: {why}", "branch": ref,
+                "content": base64.b64encode(raw.encode("utf-8")).decode()}
+        if cur.status_code == 200:
+            body["sha"] = cur.json()["sha"]
+        r = requests.put(url, headers=h, json=body, timeout=20)
+        if r.status_code not in (200, 201):
+            gh("warning", f"ذخیره‌ی {DATA_FILE} ناموفق: HTTP {r.status_code}")
+    except Exception as e:
+        gh("warning", f"ذخیره‌ی {DATA_FILE} ناموفق: {e}")
+
+def record_open(prices, now):
+    d = data()
+    if (d.get("open") or {}).get("date") != now.date().isoformat():
+        d["open"] = {"date": now.date().isoformat(), "prices": prices}
+        save_data("open " + now.date().isoformat())
+
+def change_lines(old, new):
+    lines = []
+    for title in ITEMS:
+        k = norm(title)
+        a = ((old or {}).get(k) or {}).get("sell")
+        b = ((new or {}).get(k) or {}).get("sell")
+        if not b:
+            continue
+        if not a:
+            lines.append(f"▫️ {title}: {money(b)}")
+            continue
+        pct = (b - a) / a * 100
+        sign = "🔺" if pct > 0.005 else ("🔻" if pct < -0.005 else "⚪️")
+        pct_txt = fa_digits(f"{abs(pct):.2f}").replace(".", "٫")
+        lines.append(f"{sign} {title}: {money(b)}  ({pct_txt}٪)")
+    return lines
+
+# ── پست‌ها ──
+def send_good_morning(prices, now):
+    text = (f"☀️ صبح بخیر\n\nامروز {fa_date(now)}\n\n"
             f"🌼 {BRAND_NAME} آماده‌ی خدمت‌رسانی به شماست.\n"
             f"قیمت لحظه‌ای طلا و سکه از ساعت {fa_digits(START_HOUR)} تا {fa_digits(END_HOUR % 24 or 24)} 👇")
-    if FOOTER_TEXT:
-        text += f"\n\n{FOOTER_TEXT}"
-    try:
-        tg("sendMessage", chat_id=CHANNEL_ID, text=text)
-        print("پیام صبح بخیر ارسال شد ✔", flush=True)
-    except Exception as e:
-        gh("warning", f"پیام صبح بخیر ارسال نشد: {e}")
+    close = data().get("close") or {}
+    if prices and close.get("date") and close["date"] < now.date().isoformat():
+        lines = change_lines(close.get("prices"), prices)
+        if lines:
+            text += "\n\n📊 شروع امروز نسبت به پایان روز قبل:\n" + "\n".join(lines)
+    post("sendMessage", "پیام صبح بخیر", text=foot(text))
+
+def send_tip(now):
+    title, body = content.TIPS[today_index(now, len(content.TIPS))]
+    post("sendMessage", "نکته‌ی آموزشی", text=foot(f"💡 نکته‌ی امروز: {title}\n\n{body}"))
+
+def send_quiz(now):
+    q, opts, correct, why = content.QUIZZES[today_index(now, len(content.QUIZZES))]
+    post("sendPoll", "مسابقه", question=f"🧠 مسابقه‌ی امروز: {q}",
+         options=json.dumps([{"text": o} for o in opts], ensure_ascii=False),
+         type="quiz", correct_option_id=correct, explanation=why, is_anonymous=True)
+
+def send_poll(now):
+    q, opts = content.POLLS[today_index(now, len(content.POLLS))]
+    post("sendPoll", "نظرسنجی", question=f"📊 {q}",
+         options=json.dumps([{"text": o} for o in opts], ensure_ascii=False), is_anonymous=True)
+
+def send_summary(prices, now):
+    op = data().get("open") or {}
+    base = op.get("prices") if op.get("date") == now.date().isoformat() else None
+    lines = change_lines(base, prices)
+    head = "🌙 خلاصه‌ی قیمت‌های امروز" + ("، نسبت به شروع روز" if base else "")
+    text = (f"{head}\n{fa_date(now)}\n\n" + "\n".join(lines) +
+            f"\n\nفردا ساعت {fa_digits(START_HOUR)} با قیمت‌های جدید در خدمت شما هستیم. شب خوش 🌙")
+    post("sendMessage", "خلاصه‌ی روز", text=foot(text))
+    data()["close"] = {"date": now.date().isoformat(), "prices": prices}
+    save_data("close " + now.date().isoformat())
+
+def maybe_alert(prev, prices, now):
+    if not prev or ALERT_PCT <= 0:
+        return
+    last = _status.get("last_alert")
+    if last and now - last < timedelta(minutes=30):
+        return
+    moved = []
+    for title in ITEMS:
+        k = norm(title)
+        a, b = (prev.get(k) or {}).get("sell"), (prices.get(k) or {}).get("sell")
+        if a and b and abs(b - a) / a * 100 >= ALERT_PCT:
+            moved.append(title)
+    if moved:
+        lines = [l for l in change_lines(prev, prices) if any(t in l for t in moved)]
+        _status["last_alert"] = now
+        post("sendMessage", "هشدار تغییر قیمت", text=foot("⚡️ تغییر محسوس قیمت در چند دقیقه‌ی اخیر\n\n" + "\n".join(lines)))
+
+def before_photo(prices, now):
+    record_open(prices, now)
+    if GOOD_MORNING and not _status.get("gm") and in_slot(now, START_HOUR, 0):
+        _status["gm"] = True
+        send_good_morning(prices, now)
+        time.sleep(3)
+
+def after_photo(prev, prices, now):
+    maybe_alert(prev, prices, now)
+    for h, m, kind in SCHEDULE:
+        key = f"done_{kind}"
+        if _status.get(key) or not in_slot(now, h, m):
+            continue
+        _status[key] = True
+        time.sleep(3)
+        if kind == "tip":       send_tip(now)
+        elif kind == "quiz":    send_quiz(now)
+        elif kind == "poll":    send_poll(now)
+        elif kind == "summary": send_summary(prices, now)
 
 def run_loop(max_minutes):
     """برای سرور: داخل یک اجرا، سر هر INTERVAL دقیقه دقیقاً ارسال می‌کند."""
@@ -569,14 +716,16 @@ def run_loop(max_minutes):
             if datetime.now(TZ) + timedelta(minutes=1) > deadline:
                 dispatch_next_run(); return 0
             time.sleep(60); continue
-        # فقط در اولین نوبت روز (مثلاً ۱۰:۰۰ تا ۱۰:۰۹) و فقط یک‌بار در هر اجرا
-        if GOOD_MORNING and not _status.get("gm") and now.hour == START_HOUR and now.minute < INTERVAL:
-            _status["gm"] = True
-            send_good_morning()
-            time.sleep(3)
         for attempt in range(3):
             try:
-                prev = run_once(prev)
+                prices = fetch_prices()
+                before_photo(prices, now)
+                send_photo(render(prices, prev))
+                try:
+                    after_photo(prev, prices, now)
+                except Exception as e:
+                    gh("warning", f"محتوای اضافه ارسال نشد: {e}")
+                prev = prices
                 _status["last_ok"] = datetime.now(TZ).strftime("%H:%M")
                 print(_status["last_ok"], "ارسال شد ✔", flush=True)
                 fails = 0

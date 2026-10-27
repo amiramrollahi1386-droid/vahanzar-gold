@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write        # برای ذخیره‌ی قیمت باز/بسته‌ی روز در data/day.json
   actions: write          # برای درخواست اجرای بعدی بعد از سقف ۶ ساعته
 
 concurrency:
