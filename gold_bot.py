@@ -9,7 +9,7 @@
     python gold_bot.py --preview  # فقط ساخت عکس preview.png (بدون ارسال)
     python gold_bot.py --loop 340 # روی سرور: ارسال دقیق هر N دقیقه تا ۳۴۰ دقیقه
 """
-import io, os, sys, socket, json, base64, time, random, shlex, logging
+import io, os, sys, socket, json, base64, hmac, hashlib, time, random, shlex, logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -143,6 +143,8 @@ def fetch_site_prices():
         raise RuntimeError("سایت قیمتی برنگرداند.")
     return out
 
+LAST_RAW = {}
+
 def fetch_prices():
     if PRICE_SOURCE == "site" and not DEMO:
         return fetch_site_prices()
@@ -189,6 +191,7 @@ def fetch_prices():
 
     cats = data["data"] if isinstance(data, dict) and "data" in data else data
     found = {}
+    LAST_RAW.clear()
     for cat in cats:
         for p in cat.get("products", []):
             if p.get("is_active", True):
@@ -196,6 +199,7 @@ def fetch_prices():
                 div = ABSHODE_DIVISOR if k.startswith("ابشده") else 1
                 sell = _to_int(p.get("buy_price")) if p.get("is_buy_active", True) else None
                 buy  = _to_int(p.get("sell_price")) if p.get("is_sell_active", True) else None
+                LAST_RAW[k] = {"sell": sell, "buy": buy}          # قیمت خام پنل (آبشده مثقالی) برای سایت
                 found[k] = {"unit": p.get("unit"),
                             "sell": int(round(sell / div, -3)) if sell else None,
                             "buy":  int(round(buy / div, -3)) if buy else None}
@@ -557,7 +561,8 @@ def poll_admin():
         elif parts and not txt.startswith("/"):
             parts.append(txt)                   # تکه‌های بعدی وقتی تلگرام متن بلند را چند پیام کرده
         elif txt.startswith("/status"):
-            say(f"آخرین ارسال موفق: {_status['last_ok'] or '—'}\nآخرین خطا: {_status['last_err'] or '—'}")
+            say(f"آخرین ارسال موفق: {_status['last_ok'] or '—'}\nآخرین خطا: {_status['last_err'] or '—'}"
+                + (f"\nآخرین به‌روزرسانی سایت: {_status.get('site_ok') or '—'}" if SITE_SYNC else ""))
         elif txt.startswith("/start") or txt:
             say("سلام! وقتی لاگین پنل منقضی شد، متن «Copy as cURL (bash)» درخواست products را همین‌جا بفرستید "
                 "(یا به‌صورت فایل txt). /status وضعیت را می‌گوید.")
@@ -566,10 +571,56 @@ def poll_admin():
         got = try_new_curl("\n".join(parts))
     return got
 
+# ── ارسال قیمت پنل به سایت وهان زر (هر دقیقه) ──
+SITE_SYNC = os.getenv("SITE_SYNC", "0") == "1"
+SITE_CODES = {"ابشده نقد فردایی": "gold_farda", "آبشده نقد پسفردایی": "gold_pasfarda", "تمام سکه ۸۶": "emami",
+              "تمام سکه تاریخ پایین": "emami_old", "نیم سکه ۸۶": "nim", "ربع سکه ۸۶": "rob"}
+
+def push_site():
+    """آخرین قیمت خام پنل را با امضای توکن ربات به سایت می‌فرستد. سایت در نبود آن از فید بازار استفاده می‌کند."""
+    if not (SITE_SYNC and SITE_API and SITE_KEY and BOT_TOKEN and LAST_RAW):
+        return
+    raw = {}
+    for title, code in SITE_CODES.items():
+        v = LAST_RAW.get(norm(title))
+        if v and (v.get("sell") or v.get("buy")):
+            raw[code] = {"sell": v.get("sell"), "buy": v.get("buy")}
+    if not raw:
+        return
+    payload = json.dumps(raw, separators=(",", ":"), ensure_ascii=False)
+    ts = int(time.time())
+    sig = hmac.new(BOT_TOKEN.encode(), f"{ts}.{payload}".encode(), hashlib.sha256).hexdigest()
+    try:
+        r = requests.post(f"{SITE_API.rstrip('/')}/rest/v1/rpc/ingest_panel_prices",
+                          headers={"apikey": SITE_KEY, "Content-Type": "application/json"},
+                          json={"p_payload": payload, "p_ts": ts, "p_sig": sig}, timeout=20)
+        if r.status_code >= 400:
+            _status["site_err"] = f"HTTP {r.status_code}: {r.text[:120]}"
+            if not _status.get("site_warned"):
+                gh("warning", "ارسال قیمت به سایت ناموفق: " + _status["site_err"]); _status["site_warned"] = True
+        else:
+            _status["site_ok"] = datetime.now(TZ).strftime("%H:%M")
+    except Exception as e:
+        _status["site_err"] = safe(e)[:120]
+
+def site_tick():
+    """بین نوبت‌های عکس، هر دقیقه قیمت تازه‌ی پنل را برای سایت می‌فرستد."""
+    if not SITE_SYNC or _status.get("waiting_auth"):
+        return
+    try:
+        fetch_prices()
+        push_site()
+    except Exception as e:
+        _status["site_err"] = safe(e)[:120]
+
 def sleep_until(t):
     """تا زمان t صبر می‌کند و در این مدت هر دقیقه پیام‌های مدیر را چک می‌کند."""
+    first = True
     while True:
         poll_admin()
+        if not first and in_window(datetime.now(TZ)):
+            site_tick()
+        first = False
         left = (t - datetime.now(TZ)).total_seconds()
         if left <= 0:
             return
@@ -780,6 +831,7 @@ def run_loop(max_minutes):
             # منتظر کد جدید از مدیر؛ هر دقیقه چک می‌شود
             if poll_admin():
                 waiting_auth = False
+                _status["waiting_auth"] = False
                 continue
             if datetime.now(TZ) + timedelta(minutes=1) > deadline:
                 dispatch_next_run(); return 0
@@ -787,6 +839,7 @@ def run_loop(max_minutes):
         for attempt in range(3):
             try:
                 prices = fetch_prices()
+                push_site()
                 before_photo(prices, now)
                 send_photo(render(prices, prev))
                 try:
@@ -807,6 +860,7 @@ def run_loop(max_minutes):
                     "پنل را باز کنید، F12 ← Network ← درخواست products ← Copy as cURL (bash) "
                     "و متنش را همین‌جا بفرستید. بلافاصله ادامه می‌دهم.")
                 waiting_auth = True
+                _status["waiting_auth"] = True
                 break
             except Exception as e:
                 _status["last_err"] = safe(e)[:300]

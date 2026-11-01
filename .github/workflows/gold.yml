@@ -39,6 +39,10 @@ jobs:
           ABSHODE_DIVISOR: "4.3318"
           # منبع قیمت: پنل قدیری (cURL ذخیره‌شده). سایت به کانال وصل نیست.
           PRICE_SOURCE: "panel"
+          # قیمت پنل هر دقیقه به سایت وهان زر هم فرستاده می‌شود (امضاشده با توکن ربات)
+          SITE_SYNC: "1"
+          SITE_API_URL: "https://jquffpllnzbuhiyfrori.supabase.co"
+          SITE_API_KEY: "sb_publishable_tEr6QjE51hNCRxTkOAf-NA_iy2_78La"   # کلید عمومی سایت؛ محرمانه نیست
           INTERVAL_MINUTES: "10"
           START_HOUR: "10"
           END_HOUR: "20"
