@@ -603,6 +603,20 @@ def push_site():
     except Exception as e:
         _status["site_err"] = safe(e)[:120]
 
+def heartbeat():
+    """وضعیت ربات (بدون هیچ اطلاعات محرمانه) برای عیب‌یابی."""
+    if not (SITE_API and SITE_KEY):
+        return
+    st = {k: _status.get(k) for k in ("last_ok", "last_err", "site_ok", "site_err", "waiting_auth")}
+    st["raw_items"] = len(LAST_RAW)
+    st["now"] = datetime.now(TZ).strftime("%H:%M")
+    try:
+        requests.post(f"{SITE_API.rstrip('/')}/rest/v1/rpc/bot_heartbeat",
+                      headers={"apikey": SITE_KEY, "Content-Type": "application/json"},
+                      json={"p": {k: (safe(str(v))[:200] if isinstance(v, str) else v) for k, v in st.items()}}, timeout=10)
+    except Exception:
+        pass
+
 def site_tick():
     """بین نوبت‌های عکس، هر دقیقه قیمت تازه‌ی پنل را برای سایت می‌فرستد."""
     if not SITE_SYNC or _status.get("waiting_auth"):
@@ -612,6 +626,7 @@ def site_tick():
         push_site()
     except Exception as e:
         _status["site_err"] = safe(e)[:120]
+    heartbeat()
 
 def sleep_until(t):
     """تا زمان t صبر می‌کند و در این مدت هر دقیقه پیام‌های مدیر را چک می‌کند."""
@@ -835,6 +850,7 @@ def run_loop(max_minutes):
                 continue
             if datetime.now(TZ) + timedelta(minutes=1) > deadline:
                 dispatch_next_run(); return 0
+            heartbeat()
             time.sleep(60); continue
         for attempt in range(3):
             try:
