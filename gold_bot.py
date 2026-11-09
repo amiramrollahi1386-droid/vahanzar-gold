@@ -56,6 +56,11 @@ ITEMS = [
     "ربع سکه ۸۶",
 ]
 
+LABELS = {"ابشده نقد فردایی": "آبشده فردایی", "آبشده نقد پسفردایی": "آبشده پس‌فردایی"}
+
+def label(title):
+    return LABELS.get(title, title)
+
 def unit_label(key, p):
     u = (p or {}).get("unit")
     if u is None:
@@ -279,85 +284,142 @@ def triangle(d, cx, cy, up, color, s=11):
           [(cx, cy+s), (cx-s, cy-s*0.8), (cx+s, cy-s*0.8)]
     d.polygon(pts, fill=color)
 
+TRUST_TEXT = os.getenv("TRUST_TEXT", "")      # نشان‌های اعتماد تأییدشده، جدا با «،»
+PANEL_BG   = (255, 255, 255, 14)
+CARD_LINE  = (*GOLD_D, 120)
+
+def _card(img, box, fill=PANEL_BG, outline=CARD_LINE, radius=26, width=2):
+    ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(ov).rounded_rectangle(box, radius, fill=fill, outline=outline, width=width)
+    img.alpha_composite(ov)
+    return ImageDraw.Draw(img)
+
+def _pill(img, cx, cy, text, f, fg, bg, pad_x=22, h=46):
+    w = int(img_text_width(text, f)) + 2 * pad_x
+    d = _card(img, [cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], fill=bg, outline=None, radius=h // 2)
+    draw_text(d, (cx, cy), text, f, fg, "mm")
+    return d, w
+
+def img_text_width(text, f):
+    if not HAS_RAQM:
+        text = get_display(arabic_reshaper.reshape(text), base_dir="R")
+    return f.getlength(text)
+
+def money_fa(n):
+    return money(n).replace(",", "٬")
+
+def pct_fa(a, b):
+    pct = (b - a) / a * 100
+    return fa_digits(f"{abs(pct):.2f}").replace(".", "٫") + "٪", pct > 0
+
 def render(prices, prev=None, now=None):
+    """تصویر قیمت: بخش آبشده (گرم + مظنه‌ی مثقال) و بخش سکه، با تغییر نسبت به مبنا (شروع امروز)."""
     now = now or datetime.now(TZ)
-    n = len(ITEMS)
-    H = HEADER_H + n * (ROW_H + ROW_GAP) + FOOTER_H
+    gold = [t for t in ITEMS if label(t).startswith("آبشده")]
+    coins = [t for t in ITEMS if t not in gold]
+    HEAD, SEC, COLS, R1, R2, GAP, FOOT = 300, 74, 56, 172, 128, 16, 250
+    H = (HEAD + COLS + (SEC + len(gold) * (R1 + GAP) if gold else 0)
+         + (SEC + len(coins) * (R2 + GAP) if coins else 0) + FOOT)
     img = gradient(W, H, BG_TOP, BG_BOT).convert("RGBA")
-    glow(img, (W - 150, 120), 360, (255, 190, 70), 70)
-    glow(img, (80, H - 60), 300, (255, 170, 50), 35)
+    glow(img, (W - 120, 90), 380, (255, 190, 70), 60)
+    glow(img, (60, H - 120), 320, (255, 170, 50), 30)
     d = ImageDraw.Draw(img)
+    d.rounded_rectangle([18, 18, W - 18, H - 18], 34, outline=(*GOLD_D, 110), width=2)
 
-    # قاب نازک دور تصویر
-    d.rounded_rectangle([18, 18, W-18, H-18], 34, outline=(*GOLD_D, 110), width=2)
-
-    # ── هدر ──
-    cx, cy, r = W - PAD - 100, 135, 100
-    d.ellipse([cx-r-6, cy-r-6, cx+r+6, cy+r+6], outline=GOLD, width=3)
-    d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(250, 246, 238))
+    # ── هدر: لوگو، عنوان، تاریخ، نشان به‌روزرسانی ──
+    cx, cy, r = W - PAD - 92, 140, 92
+    d.ellipse([cx - r - 7, cy - r - 7, cx + r + 7, cy + r + 7], outline=GOLD, width=3)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(250, 246, 238))
     if os.path.exists(LOGO_PATH):
         logo = Image.open(LOGO_PATH).convert("RGBA")
-        box = int(2 * r * 0.78)                      # حفظ نسبت تصویر، جا شدن داخل دایره
+        box = int(2 * r * 0.78)
         logo.thumbnail((box, box), Image.LANCZOS)
         img.paste(logo, (cx - logo.width // 2, cy - logo.height // 2), logo)
     else:
-        draw_text(d, (cx, cy-12), BRAND_NAME, font(FONT_BOLD, 34), (170, 112, 20), "mm")
-        draw_text(d, (cx, cy+30), BRAND_SLOG, font(FONT_REG, 16), (120, 100, 70), "mm")
-
-    tx = cx - r - 40
-    draw_text(d, (tx, 100), "قیمت لحظه‌ای طلا و سکه", font(FONT_BOLD, 54), WHITE)
-    j = jdatetime.datetime.fromgregorian(datetime=now)
-    days = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه"]
-    months = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"]
-    date_txt = f"{days[j.weekday()]} {fa_digits(j.day)} {months[j.month-1]} {fa_digits(j.year)}  |  ساعت {fa_digits(now.strftime('%H:%M'))}"
-    draw_text(d, (tx, 170), date_txt, font(FONT_REG, 33), GOLD)
-
-    # جداکننده طلایی
+        draw_text(d, (cx, cy), BRAND_NAME, font(FONT_BOLD, 34), (170, 112, 20), "mm")
+    tx = cx - r - 38
+    draw_text(d, (tx, 92), "نرخ لحظه‌ای آبشده و سکه", font(FONT_BOLD, 56), WHITE)
+    draw_text(d, (tx, 158), f"{BRAND_NAME}  |  {fa_date(now)}", font(FONT_REG, 32), GOLD)
+    upd = f"آخرین به‌روزرسانی  {fa_digits(now.strftime('%H:%M'))}"
+    f_upd = font(FONT_BOLD, 28)
+    pw = int(img_text_width(upd, f_upd)) + 74
+    d = _card(img, [tx - pw, 204, tx, 252], fill=(92, 214, 140, 34), outline=(92, 214, 140, 150), radius=24)
+    d.ellipse([tx - 38, 220, tx - 22, 236], fill=UP)
+    draw_text(d, (tx - 50, 228), upd, f_upd, WHITE)
     for x in range(PAD, W - PAD):
-        t = abs((x - W/2) / (W/2 - PAD))
-        d.point((x, 262), fill=(*GOLD, int(255 * (1 - t**2))))
+        t = abs((x - W / 2) / (W / 2 - PAD))
+        d.point((x, HEAD - 14), fill=(*GOLD, int(255 * (1 - t ** 2))))
 
-    # سرستون‌ها
-    right_x = W - PAD - 36
-    sell_x, buy_x = 460, 185
-    hy = HEADER_H - 38
-    draw_text(d, (sell_x, hy), "فروش به شما", font(FONT_REG, 29), MUTED, "mm")
-    draw_text(d, (buy_x,  hy), "خرید از شما", font(FONT_REG, 29), MUTED, "mm")
+    sell_x, buy_x, name_x = 470, 190, W - PAD - 34
+    y = HEAD
+    f_col = font(FONT_BOLD, 27)
+    for x, txt in ((sell_x, "فروش به شما"), (buy_x, "خرید از شما")):
+        d, _ = _pill(img, x, y + 22, txt, f_col, MUTED, (255, 255, 255, 18), h=42)
+    y += COLS
 
-    # ── ردیف‌ها ──
-    y = HEADER_H
-    for title in ITEMS:
+    def section(y, title, sub):
+        dd = ImageDraw.Draw(img)
+        dd.rounded_rectangle([W - PAD - 10, y + 18, W - PAD, y + 54], 4, fill=GOLD)
+        draw_text(dd, (W - PAD - 26, y + 36), title, font(FONT_BOLD, 38), GOLD)
+        tw = img_text_width(title, font(FONT_BOLD, 38))
+        draw_text(dd, (W - PAD - 46 - tw, y + 40), sub, font(FONT_REG, 26), MUTED)
+        return y + SEC
+
+    def row(y, title, h, mithqal):
         key = norm(title)
-        card = [PAD, y, W - PAD, y + ROW_H]
-        ov = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(ov).rounded_rectangle(card, 28, fill=(255, 255, 255, 16), outline=(*GOLD_D, 140), width=2)
-        img.alpha_composite(ov)
-        d = ImageDraw.Draw(img)
-        d.rounded_rectangle([W - PAD - 8, y + 30, W - PAD - 2, y + ROW_H - 30], 4, fill=GOLD)  # خط تاکیدی
-
-        mid = y + ROW_H // 2
         p = prices.get(key) or {}
-        draw_text(d, (right_x, mid - 16), title, font(FONT_BOLD, 44), WHITE)
-        draw_text(d, (right_x, mid + 32), unit_label(key, p), font(FONT_REG, 25), MUTED)
-        for x, field, col in ((sell_x, "sell", GOLD), (buy_x, "buy", WHITE)):
+        dd = _card(img, [PAD, y, W - PAD, y + h])
+        mid = y + h // 2
+        top = mid - (24 if mithqal else 18)
+        vy = top if mithqal else mid
+        draw_text(dd, (name_x, top - 10), label(title), font(FONT_BOLD, 44 if mithqal else 40), WHITE)
+        base = ((prev or {}).get(key) or {}).get("sell")
+        if base and p.get("sell") and abs(p["sell"] - base) / base >= 0.00005:
+            txt, up = pct_fa(base, p["sell"])
+            col = UP if up else DOWN
+            f_ch = font(FONT_BOLD, 25)
+            cw = int(img_text_width(txt, f_ch)) + 62
+            dd = _card(img, [name_x - cw, top + 26, name_x, top + 66], fill=(*col, 40), outline=None, radius=20)
+            triangle(dd, name_x - 24, top + 46, up, col, 8)
+            draw_text(dd, (name_x - 42, top + 46), txt, f_ch, col, "rm")
+        else:
+            draw_text(dd, (name_x, top + 46), unit_label(key, p), font(FONT_REG, 25), MUTED)
+        raw = LAST_RAW.get(key) or {}
+        for x, field, colr in ((sell_x, "sell", GOLD), (buy_x, "buy", WHITE)):
             val = p.get(field)
-            if val is None:
-                draw_text(d, (x, mid), "—", font(FONT_BOLD, 42), MUTED, "mm")
-                continue
-            draw_text(d, (x, mid - 10), money(val), font(FONT_BOLD, 42), col, "mm")
-            old = (prev or {}).get(key, {}).get(field)     # تغییر نسبت به ارسال قبلی
-            if old is not None and val != old:
-                diff = val - old
-                c = UP if diff > 0 else DOWN
-                triangle(d, x - 52, mid + 36, diff > 0, c, 9)
-                draw_text(d, (x - 30, mid + 36), money(abs(diff)), font(FONT_REG, 22), c, "lm")
-        y += ROW_H + ROW_GAP
+            if not val:
+                draw_text(dd, (x, vy), "—", font(FONT_BOLD, 44), MUTED, "mm"); continue
+            draw_text(dd, (x, vy), money_fa(val), font(FONT_BOLD, 46 if mithqal else 42), colr, "mm")
+            if mithqal:
+                m = raw.get(field) or round(val * ABSHODE_DIVISOR, -3)
+                draw_text(dd, (x, top + 54), f"مثقال  {money_fa(m)}", font(FONT_REG, 27), MUTED, "mm")
+        return y + h + GAP
 
-    # ── فوتر ──
-    draw_text(d, (W//2, H - 70), "قیمت‌ها به تومان می‌باشد و ممکن است لحظه‌ای تغییر کند", font(FONT_REG, 26), MUTED, "mm")
-    if FOOTER_TEXT:
-        d.text((W//2, H - 36), FOOTER_TEXT, font=font(FONT_BOLD, 26), fill=GOLD, anchor="mm")
+    if gold:
+        y = section(y, "طلای آبشده", "۱۸ عیار (۷۵۰)  •  قیمت هر گرم")
+        for t in gold:
+            y = row(y, t, R1, True)
+    if coins:
+        y = section(y, "سکه بهار آزادی", "قیمت هر عدد")
+        for t in coins:
+            y = row(y, t, R2, False)
 
+    # ── فوتر: اعتماد و تماس ──
+    fy = H - FOOT + 6
+    d = _card(img, [PAD, fy, W - PAD, H - 92], fill=(244, 190, 80, 22), outline=(*GOLD, 150), radius=28)
+    trust = [t.strip() for t in TRUST_TEXT.split("،") if t.strip()]
+    if trust:
+        draw_text(d, (W // 2, fy + 42), "   •   ".join(trust), font(FONT_BOLD, 28), GOLD, "mm")
+    cy2, f_c = fy + (100 if trust else 75), font(FONT_BOLD, 34)
+    phone = f"ثبت سفارش  {fa_digits(ORDER_PHONE)}" if ORDER_PHONE else ""
+    link = f"t.me/{CHANNEL_ID[1:]}" if CHANNEL_ID.startswith("@") else ""
+    if phone and link:
+        draw_text(d, (W // 2 + 30, cy2), phone, f_c, WHITE, "lm")
+        d.text((W // 2, cy2), "|", font=f_c, fill=MUTED, anchor="mm")
+        d.text((W // 2 - 30, cy2), link, font=f_c, fill=WHITE, anchor="rm")
+    elif phone or link:
+        draw_text(d, (W // 2, cy2), phone or link, f_c, WHITE, "mm")
+    draw_text(d, (W // 2, H - 56), "قیمت‌ها به تومان است  •  تغییرات نسبت به شروع امروز", font(FONT_REG, 25), MUTED, "mm")
     out = io.BytesIO()
     img.convert("RGB").save(out, "PNG", optimize=True)
     out.seek(0)
@@ -388,7 +450,7 @@ def price_caption(prices, now):
         p = prices.get(norm(title)) or {}
         if not (p.get("sell") or p.get("buy")):
             continue
-        name = title.replace("ابشده", "آبشده")
+        name = label(title)
         lines.append(f"🔸 {name}" + (" (هر گرم ۱۸ عیار)" if name.startswith("آبشده") else ""))
         lines.append(f"     فروش به شما {fmt(p.get('sell'))} | خرید از شما {fmt(p.get('buy'))}")
         raw = LAST_RAW.get(norm(title)) or {}
@@ -758,10 +820,10 @@ def fa_date(now):
     return f"{DAYS[j.weekday()]} {fa_digits(j.day)} {MONTHS[j.month-1]} {fa_digits(j.year)}"
 
 def foot(text):
-    tail = FOOTER_TEXT or ""
-    if CHANNEL_LINK:
-        tail = f"🔗 {BRAND_NAME} | عضویت: {CHANNEL_LINK}"
-    return text + (f"\n\n{tail}" if tail else "")
+    tail = [f"🔗 {BRAND_NAME} | عضویت: {CHANNEL_LINK}"] if CHANNEL_LINK else ([FOOTER_TEXT] if FOOTER_TEXT else [])
+    if ORDER_PHONE:  tail.insert(0, f"☎️ ثبت سفارش: {ORDER_PHONE}")
+    if ADDRESS_TEXT: tail.insert(1 if ORDER_PHONE else 0, f"📍 {ADDRESS_TEXT}")
+    return text + ("\n\n" + "\n".join(tail) if tail else "")
 
 def post(method, what, **kw):
     if share_markup() and "reply_markup" not in kw:
@@ -815,10 +877,21 @@ def save_data(why):
     except Exception as e:
         gh("warning", f"ذخیره‌ی {DATA_FILE} ناموفق: {e}")
 
+def day_base(now):
+    """قیمت‌های اولین ارسال امروز؛ با شروع دوباره‌ی اجرا هم از بین نمی‌رود."""
+    op = data().get("open") or {}
+    return op.get("prices") if op.get("date") == now.date().isoformat() else None
+
+def week_start(d):
+    return d - timedelta(days=(d.weekday() + 2) % 7)      # هفته‌ی ایرانی از شنبه
+
 def record_open(prices, now):
     d = data()
     if (d.get("open") or {}).get("date") != now.date().isoformat():
         d["open"] = {"date": now.date().isoformat(), "prices": prices}
+        if (d.get("week_open") or {}).get("week") != week_start(now.date()).isoformat():
+            d["week_open"] = {"week": week_start(now.date()).isoformat(), "date": now.date().isoformat(),
+                              "prices": prices}
         save_data("open " + now.date().isoformat())
 
 def change_lines(old, new):
@@ -831,12 +904,12 @@ def change_lines(old, new):
         if not b:
             continue
         if not a:
-            lines.append(f"▫️ {title}: {money(b)}")
+            lines.append(f"▫️ {label(title)}: {money(b)}")
             continue
         pct = (b - a) / a * 100
         sign = "🔺" if pct > 0.005 else ("🔻" if pct < -0.005 else "⚪️")
         pct_txt = fa_digits(f"{abs(pct):.2f}").replace(".", "٫")
-        lines.append(f"{sign} {title}: {money(b)}  ({pct_txt}٪)")
+        lines.append(f"{sign} {label(title)}: {money(b)}  ({pct_txt}٪)")
     return lines
 
 # ── پست‌ها ──
@@ -884,6 +957,12 @@ def send_summary(prices, now):
     head = "🌙 خلاصه‌ی قیمت‌های امروز" + ("، نسبت به شروع روز" if base else "")
     nxt = next_start(now)
     when = "فردا" if nxt.date() == now.date() + timedelta(days=1) else fa_date(nxt).split()[0]
+    wk = data().get("week_open") or {}
+    if (week_start(nxt.date()) != week_start(now.date()) and wk.get("week") == week_start(now.date()).isoformat()
+            and wk.get("date") != now.date().isoformat()):
+        week = change_lines(wk.get("prices"), prices)
+        if week:
+            lines += ["", "📅 جمع‌بندی هفته (نسبت به شروع هفته):"] + week
     text = (f"{head}\n{fa_date(now)}\n\n" + "\n".join(lines) +
             f"\n\n{when} ساعت {fa_digits(START_HOUR)} با قیمت‌های جدید در خدمت شما هستیم. شب خوش 🌙")
     post("sendMessage", "خلاصه‌ی روز", text=foot(text))
@@ -903,7 +982,7 @@ def maybe_alert(prev, prices, now):
         if a and b and abs(b - a) / a * 100 >= ALERT_PCT:
             moved.append(title)
     if moved:
-        lines = [l for l in change_lines(prev, prices) if any(t in l for t in moved)]
+        lines = [l for l in change_lines(prev, prices) if any(label(t) in l for t in moved)]
         _status["last_alert"] = now
         post("sendMessage", "هشدار تغییر قیمت", text=foot("⚡️ تغییر محسوس قیمت در چند دقیقه‌ی اخیر\n\n" + "\n".join(lines)))
 
@@ -959,7 +1038,14 @@ def run_loop(max_minutes):
             if poll_admin():
                 waiting_auth = False
                 _status["waiting_auth"] = False
+                _status.pop("auth_since", None)
                 continue
+            since = _status.get("auth_since")
+            if since and not _status.get("outage_posted") and datetime.now(TZ) - since > timedelta(minutes=30):
+                _status["outage_posted"] = True
+                post("sendMessage", "اعلام توقف",
+                     text=foot("⏸ به‌روزرسانی قیمت‌ها موقتاً متوقف است و به‌زودی برقرار می‌شود.\n"
+                               "برای استعلام قیمت و ثبت سفارش با ما تماس بگیرید."))
             if datetime.now(TZ) + timedelta(minutes=1) > deadline:
                 dispatch_next_run(); return 0
             heartbeat()
@@ -969,12 +1055,15 @@ def run_loop(max_minutes):
                 prices = fetch_prices()
                 push_site()
                 before_photo(prices, now)
-                send_photo(render(prices, prev), price_caption(prices, now))
+                send_photo(render(prices, day_base(now) or prev), price_caption(prices, now))
                 try:
                     after_photo(prev, prices, now)
                 except Exception as e:
                     gh("warning", f"محتوای اضافه ارسال نشد: {e}")
                 prev = prices
+                _status.pop("auth_since", None)
+                if _status.pop("outage_posted", False):
+                    post("sendMessage", "اعلام ادامه", text=foot("✅ اعلام قیمت‌ها دوباره برقرار شد. از همراهی شما سپاسگزاریم."))
                 _status["last_ok"] = datetime.now(TZ).strftime("%H:%M")
                 print(_status["last_ok"], "ارسال شد ✔", flush=True)
                 fails = 0
@@ -988,6 +1077,7 @@ def run_loop(max_minutes):
                 send_otp()
                 waiting_auth = True
                 _status["waiting_auth"] = True
+                _status.setdefault("auth_since", datetime.now(TZ))
                 break
             except Exception as e:
                 _status["last_err"] = safe(e)[:300]
