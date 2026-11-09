@@ -257,11 +257,11 @@ HEADER_H = 330
 ROW_H, ROW_GAP = 150, 22
 FOOTER_H = 130
 
-BG_TOP, BG_BOT = (12, 10, 8), (33, 24, 12)
-GOLD   = (244, 190, 80)
-GOLD_D = (176, 126, 38)
+BG_TOP, BG_BOT = (14, 6, 8), (44, 10, 18)
+GOLD   = (238, 72, 92)     # رنگ تأکید (قرمز یاقوتی)
+GOLD_D = (150, 28, 48)
 WHITE  = (246, 240, 228)
-MUTED  = (165, 152, 128)
+MUTED  = (178, 152, 158)
 UP, DOWN = (92, 214, 140), (240, 98, 98)
 
 def gradient(w, h, top, bot):
@@ -321,8 +321,8 @@ def render(prices, prev=None, now=None):
     H = (HEAD + COLS + (SEC + len(gold) * (R1 + GAP) if gold else 0)
          + (SEC + len(coins) * (R2 + GAP) if coins else 0) + FOOT)
     img = gradient(W, H, BG_TOP, BG_BOT).convert("RGBA")
-    glow(img, (W - 120, 90), 380, (255, 190, 70), 60)
-    glow(img, (60, H - 120), 320, (255, 170, 50), 30)
+    glow(img, (W - 120, 90), 380, (230, 40, 70), 60)
+    glow(img, (60, H - 120), 320, (230, 40, 70), 30)
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([18, 18, W - 18, H - 18], 34, outline=(*GOLD_D, 110), width=2)
 
@@ -406,7 +406,7 @@ def render(prices, prev=None, now=None):
 
     # ── فوتر: اعتماد و تماس ──
     fy = H - FOOT + 6
-    d = _card(img, [PAD, fy, W - PAD, H - 92], fill=(244, 190, 80, 22), outline=(*GOLD, 150), radius=28)
+    d = _card(img, [PAD, fy, W - PAD, H - 92], fill=(*GOLD, 22), outline=(*GOLD, 150), radius=28)
     trust = [t.strip() for t in TRUST_TEXT.split("،") if t.strip()]
     if trust:
         draw_text(d, (W // 2, fy + 42), "   •   ".join(trust), font(FONT_BOLD, 28), GOLD, "mm")
