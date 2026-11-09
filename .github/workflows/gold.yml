@@ -32,6 +32,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           REQUEST_CURL: ${{ secrets.REQUEST_CURL }}
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          PANEL_MOBILE: ${{ secrets.PANEL_MOBILE }}   # شماره ورود پنل قدیری؛ برای گرفتن خودکار کد پیامکی
           GITHUB_TOKEN: ${{ github.token }}
           CHANNEL_ID: "@vahanzar"
           FOOTER_TEXT: "@vahanzar"

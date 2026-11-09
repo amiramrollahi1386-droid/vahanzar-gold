@@ -9,7 +9,7 @@
     python gold_bot.py --preview  # فقط ساخت عکس preview.png (بدون ارسال)
     python gold_bot.py --loop 340 # روی سرور: ارسال دقیق هر N دقیقه تا ۳۴۰ دقیقه
 """
-import io, os, sys, socket, json, base64, hmac, hashlib, time, random, shlex, logging
+import io, os, re, sys, socket, json, base64, hmac, hashlib, time, random, shlex, logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -190,6 +190,8 @@ def fetch_prices():
         data = r.json()
 
     cats = data["data"] if isinstance(data, dict) and "data" in data else data
+    if not isinstance(cats, list):
+        raise RuntimeError("جواب پنل فهرست محصولات نیست؛ احتمالاً cURL مال درخواست products نیست.")
     found = {}
     LAST_RAW.clear()
     for cat in cats:
@@ -203,6 +205,9 @@ def fetch_prices():
                 found[k] = {"unit": p.get("unit"),
                             "sell": int(round(sell / div, -3)) if sell else None,
                             "buy":  int(round(buy / div, -3)) if buy else None}
+    # بدون هیچ قیمتی، عکس پر از «—» و خلاصه‌ی خالی ارسال نشود
+    if not any(found.get(norm(t), {}).get("sell") or found.get(norm(t), {}).get("buy") for t in ITEMS):
+        raise RuntimeError("پنل برای هیچ‌کدام از آیتم‌ها قیمت برنگرداند؛ عکس ارسال نشد.")
     missing = [t for t in ITEMS if norm(t) not in found]
     if missing:
         logging.warning("این آیتم‌ها در پنل پیدا نشدند: %s", missing)
@@ -533,6 +538,63 @@ def try_new_curl(text, who=None):
     say(f"✅ کد جدید ذخیره شد و کار می‌کند ({n} قیمت خوانده شد). ارسال‌ها ادامه پیدا می‌کند.")
     return True
 
+# ── ورود دوباره به پنل با کد پیامکی (بدون F12) ──
+PANEL_MOBILE = os.getenv("PANEL_MOBILE", "").strip()
+_otp = {"mobile": PANEL_MOBILE, "verify": None}
+EN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+def _panel_auth(path, payload):
+    """درخواست به auth/... پنل با همان هدرهای cURL ذخیره‌شده (بدون کوکی قدیمی)."""
+    open("request.txt", "w", encoding="utf-8").write(os.environ["REQUEST_CURL"])
+    url, _, headers, _ = parse_curl("request.txt")
+    base = url.split("?")[0].rsplit("/products", 1)[0]
+    h = {k: v for k, v in headers.items() if k.lower() not in ("cookie", "content-type")}
+    if _otp["verify"]:
+        h = {k: v for k, v in h.items() if k.lower() != "x-verify"}
+        h["X-Verify"] = _otp["verify"]
+    r = requests.post(f"{base}/auth/{path}", headers=h, json=payload, timeout=20)
+    if r.headers.get("x-verify-token"):
+        _otp["verify"] = r.headers["x-verify-token"]
+    return r
+
+def send_otp(mobile=None):
+    mobile = (mobile or _otp["mobile"]).translate(EN_DIGITS).strip()
+    if not mobile:
+        say("برای ورود خودکار، یک‌بار بفرستید: /login 09xxxxxxxxx")
+        return False
+    _otp["mobile"] = mobile
+    try:
+        r = _panel_auth("send-otp", {"mobile": mobile})
+    except Exception as e:
+        say("❌ درخواست کد ورود ناموفق: " + safe(e)[:200]); return False
+    if r.status_code >= 300:
+        say(f"❌ پنل کد ورود نفرستاد (HTTP {r.status_code}). /login را دوباره بفرستید."); return False
+    say("📩 کد ۴ رقمی ورود پنل قدیری پیامک شد. همان ۴ رقم را همین‌جا بفرستید.")
+    return True
+
+def curl_with_token(text, token, verify=None):
+    """cURL قبلی با کوکی ورود تازه (و X-Verify تازه اگر پنل داده باشد)."""
+    if "access_token_web=" in text:
+        text = re.sub(r"access_token_web=[^;'\"\s^]+", "access_token_web=" + token, text, count=1)
+    else:
+        text = text.rstrip() + f" -b 'access_token_web={token}'"
+    if verify:
+        text = re.sub(r"(?i)(x-verify:\s*)[^'\"\^]+", lambda m: m.group(1) + verify, text, count=1)
+    return text
+
+def login_with_code(code):
+    if not _otp["mobile"]:
+        say("اول /login 09xxxxxxxxx را بفرستید."); return False
+    try:
+        r = _panel_auth("token", {"code": code, "mobile": _otp["mobile"]})
+    except Exception as e:
+        say("❌ ورود ناموفق: " + safe(e)[:200]); return False
+    token = r.cookies.get("access_token_web")
+    if r.status_code >= 300 or not token:
+        say(f"❌ کد قبول نشد (HTTP {r.status_code}). دوباره بفرستید یا /login برای کد جدید.")
+        return False
+    return try_new_curl(curl_with_token(os.environ["REQUEST_CURL"], token, _otp["verify"]))
+
 def poll_admin():
     """پیام‌های مدیر را می‌خواند. اگر cURL جدید آمد و کار کرد، True برمی‌گرداند."""
     global _upd_offset, ADMIN_ID
@@ -560,12 +622,16 @@ def poll_admin():
             parts, sender = [txt], cid                       # شروع یک cURL تازه
         elif parts and not txt.startswith("/"):
             parts.append(txt)                   # تکه‌های بعدی وقتی تلگرام متن بلند را چند پیام کرده
+        elif txt.startswith("/login"):
+            send_otp(txt[6:].strip() or None)
+        elif txt.strip().translate(EN_DIGITS).isdigit() and len(txt.strip()) == 4:
+            got = login_with_code(txt.strip().translate(EN_DIGITS)) or got
         elif txt.startswith("/status"):
             say(f"آخرین ارسال موفق: {_status['last_ok'] or '—'}\nآخرین خطا: {_status['last_err'] or '—'}"
                 + (f"\nآخرین به‌روزرسانی سایت: {_status.get('site_ok') or '—'}" if SITE_SYNC else ""))
         elif txt.startswith("/start") or txt:
-            say("سلام! وقتی لاگین پنل منقضی شد، متن «Copy as cURL (bash)» درخواست products را همین‌جا بفرستید "
-                "(یا به‌صورت فایل txt). /status وضعیت را می‌گوید.")
+            say("سلام! وقتی لاگین پنل منقضی شد، خودم کد پیامکی می‌گیرم؛ فقط کد ۴ رقمی را همین‌جا بفرستید.\n"
+                "/login 09xxxxxxxxx  گرفتن کد ورود جدید\n/status  وضعیت")
     if parts:
         ADMIN_ID = sender or ADMIN_ID          # پیام‌ها و ذخیره در چت همان مدیری که کد را فرستاد
         got = try_new_curl("\n".join(parts))
@@ -836,6 +902,12 @@ def run_loop(max_minutes):
             poll_admin(); print("خارج از ساعت کاری؛ کاری برای انجام نیست."); return 0
         print("منتظر شروع ساعت کاری:", start.strftime("%H:%M"), flush=True)
         sleep_until(start)
+    elif now.minute % INTERVAL or now.second > 30:
+        # اجرای ادامه‌دهنده وسط روز: عکس تکراری چند دقیقه بعد از عکس قبلی نفرستد؛ صبر تا نوبت بعدی
+        nxt = next_slot(now)
+        if nxt <= deadline:
+            print("منتظر نوبت بعدی:", nxt.strftime("%H:%M"), flush=True)
+            sleep_until(nxt)
 
     prev, fails, waiting_auth = None, 0, False
     while True:
@@ -872,9 +944,8 @@ def run_loop(max_minutes):
                 gh("warning", str(e))
                 if not ADMIN_ID:
                     gh("error", str(e)); return 1
-                say("⚠️ لاگین پنل منقضی شد و ارسال قیمت‌ها متوقف است.\n"
-                    "پنل را باز کنید، F12 ← Network ← درخواست products ← Copy as cURL (bash) "
-                    "و متنش را همین‌جا بفرستید. بلافاصله ادامه می‌دهم.")
+                say("⚠️ لاگین پنل منقضی شد و ارسال قیمت‌ها متوقف است.")
+                send_otp()
                 waiting_auth = True
                 _status["waiting_auth"] = True
                 break
