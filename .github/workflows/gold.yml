@@ -37,6 +37,9 @@ jobs:
           CHANNEL_ID: "@vahanzar"
           FOOTER_TEXT: "@vahanzar"
           BRAND_NAME: "وهان زر"
+          ORDER_PHONE: "09123900723"
+          ADDRESS_TEXT: "تقاطع کریمخان و حافظ، مجتمع تجاری الماس کریمخان، همکف، پلاک ۸۷"
+          HOLIDAYS: ""   # تعطیلات رسمی، مثل 2026-11-20,2026-12-01 (جمعه‌ها خودکار تعطیل است)
           ABSHODE_DIVISOR: "4.3318"
           # منبع قیمت: پنل قدیری (cURL ذخیره‌شده). سایت به کانال وصل نیست.
           PRICE_SOURCE: "panel"

@@ -367,13 +367,38 @@ def render(prices, prev=None, now=None):
 # ── رشد کانال: دکمه‌ی «ارسال برای دوستان» و لینک عضویت زیر پست‌ها ──
 from urllib.parse import quote
 SHARE_BUTTON = os.getenv("SHARE_BUTTON", "1") == "1"
+ORDER_PHONE  = os.getenv("ORDER_PHONE", "")                   # شماره‌ی ثبت سفارش در کپشن
 SITE_URL     = os.getenv("SITE_URL", "")                      # دکمه‌ی «خرید آنلاین»
 CHANNEL_LINK = os.getenv("CHANNEL_LINK") or (f"https://t.me/{CHANNEL_ID.lstrip('@')}" if CHANNEL_ID.startswith("@") else "")
 SHARE_TEXT = os.getenv("SHARE_TEXT", f"قیمت لحظه‌ای طلا، آبشده و سکه در کانال {BRAND_NAME} 👇")
 PHOTO_CAPTION = os.getenv("PHOTO_CAPTION",
-    f"📊 قیمت لحظه‌ای طلا و سکه | {BRAND_NAME}"
+    f"📊 نرخ لحظه‌ای آبشده و سکه | {BRAND_NAME}"
+    + (f"\n☎️ ثبت سفارش: {ORDER_PHONE} | تحویل حضوری با فاکتور" if ORDER_PHONE else "")
     + (f"\n🛒 خرید و فروش آنلاین با همین قیمت‌ها: {SITE_URL}" if SITE_URL else "")
     + (f"\n🔗 عضویت در کانال: {CHANNEL_LINK}" if CHANNEL_LINK else ""))
+
+ADDRESS_TEXT = os.getenv("ADDRESS_TEXT", "")
+
+def price_caption(prices, now):
+    """کپشن متنی هر عکس: قیمت‌ها قابل جستجو و کپی، و در فهرست چت‌ها هم دیده می‌شوند."""
+    fmt = lambda n: money(n).replace(",", "٬") if n else "—"
+    lines = [f"📊 نرخ آبشده و سکه | {BRAND_NAME}",
+             f"🕒 {fa_digits(now.strftime('%H:%M'))} | {fa_date(now)}  (تومان)", ""]
+    for title in ITEMS:
+        p = prices.get(norm(title)) or {}
+        if not (p.get("sell") or p.get("buy")):
+            continue
+        name = title.replace("ابشده", "آبشده")
+        lines.append(f"🔸 {name}" + (" (هر گرم ۱۸ عیار)" if name.startswith("آبشده") else ""))
+        lines.append(f"     فروش به شما {fmt(p.get('sell'))} | خرید از شما {fmt(p.get('buy'))}")
+        raw = LAST_RAW.get(norm(title)) or {}
+        if name.startswith("آبشده") and raw.get("sell"):
+            lines.append(f"     مظنه‌ی مثقال: {fmt(raw['sell'])}")
+    lines.append("")
+    if ORDER_PHONE:  lines.append(f"☎️ ثبت سفارش: {ORDER_PHONE} | تحویل حضوری با فاکتور و کد ری‌گیری")
+    if ADDRESS_TEXT: lines.append(f"📍 {ADDRESS_TEXT}")
+    if CHANNEL_LINK: lines.append(f"🔗 {CHANNEL_LINK}")
+    return "\n".join(lines)[:1024]
 
 def share_markup():
     if not ((SHARE_BUTTON and CHANNEL_LINK) or SITE_URL):
@@ -407,13 +432,23 @@ def run_once(prev):
     send_photo(png)
     return prices
 
+HOLIDAYS = {d.strip() for d in os.getenv("HOLIDAYS", "").split(",") if d.strip()}   # مثل 2026-11-20,2026-12-01
+
+def closed_day(d):
+    """جمعه و تعطیلات رسمی بازار بسته است."""
+    return d.weekday() == 4 or d.isoformat() in HOLIDAYS
+
 def in_window(now):
     end = 24 if END_HOUR in (0, 24) else END_HOUR
-    return START_HOUR <= now.hour < end
+    return START_HOUR <= now.hour < end and not closed_day(now.date())
 
 def next_start(now):
     t = now.replace(hour=START_HOUR, minute=0, second=0, microsecond=0)
-    return t if t > now else t + timedelta(days=1)
+    if t <= now:
+        t += timedelta(days=1)
+    while closed_day(t.date()):
+        t += timedelta(days=1)
+    return t
 
 def single_instance():
     """جلوگیری از اجرای هم‌زمان دو نسخه (ارسال تکراری)."""
@@ -790,8 +825,9 @@ def change_lines(old, new):
     lines = []
     for title in ITEMS:
         k = norm(title)
-        a = ((old or {}).get(k) or {}).get("sell")
-        b = ((new or {}).get(k) or {}).get("sell")
+        side = "sell" if ((new or {}).get(k) or {}).get("sell") else "buy"
+        a = ((old or {}).get(k) or {}).get(side)
+        b = ((new or {}).get(k) or {}).get(side)
         if not b:
             continue
         if not a:
@@ -843,9 +879,13 @@ def send_summary(prices, now):
     op = data().get("open") or {}
     base = op.get("prices") if op.get("date") == now.date().isoformat() else None
     lines = change_lines(base, prices)
+    if not lines:
+        gh("warning", "خلاصه‌ی روز خالی بود و ارسال نشد."); return
     head = "🌙 خلاصه‌ی قیمت‌های امروز" + ("، نسبت به شروع روز" if base else "")
+    nxt = next_start(now)
+    when = "فردا" if nxt.date() == now.date() + timedelta(days=1) else fa_date(nxt).split()[0]
     text = (f"{head}\n{fa_date(now)}\n\n" + "\n".join(lines) +
-            f"\n\nفردا ساعت {fa_digits(START_HOUR)} با قیمت‌های جدید در خدمت شما هستیم. شب خوش 🌙")
+            f"\n\n{when} ساعت {fa_digits(START_HOUR)} با قیمت‌های جدید در خدمت شما هستیم. شب خوش 🌙")
     post("sendMessage", "خلاصه‌ی روز", text=foot(text))
     data()["close"] = {"date": now.date().isoformat(), "prices": prices}
     save_data("close " + now.date().isoformat())
@@ -929,7 +969,7 @@ def run_loop(max_minutes):
                 prices = fetch_prices()
                 push_site()
                 before_photo(prices, now)
-                send_photo(render(prices, prev))
+                send_photo(render(prices, prev), price_caption(prices, now))
                 try:
                     after_photo(prev, prices, now)
                 except Exception as e:
