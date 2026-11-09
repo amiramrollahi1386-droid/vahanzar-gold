@@ -257,11 +257,11 @@ HEADER_H = 330
 ROW_H, ROW_GAP = 150, 22
 FOOTER_H = 130
 
-BG_TOP, BG_BOT = (14, 6, 8), (44, 10, 18)
-GOLD   = (238, 72, 92)     # رنگ تأکید (قرمز یاقوتی)
-GOLD_D = (150, 28, 48)
+BG_TOP, BG_BOT = (18, 6, 10), (54, 14, 28)   # شرابی تیره
+GOLD   = (232, 196, 128)   # طلایی شامپاینی
+GOLD_D = (150, 92, 70)
 WHITE  = (246, 240, 228)
-MUTED  = (178, 152, 158)
+MUTED  = (180, 156, 150)
 UP, DOWN = (92, 214, 140), (240, 98, 98)
 
 def gradient(w, h, top, bot):
@@ -321,8 +321,8 @@ def render(prices, prev=None, now=None):
     H = (HEAD + COLS + (SEC + len(gold) * (R1 + GAP) if gold else 0)
          + (SEC + len(coins) * (R2 + GAP) if coins else 0) + FOOT)
     img = gradient(W, H, BG_TOP, BG_BOT).convert("RGBA")
-    glow(img, (W - 120, 90), 380, (230, 40, 70), 60)
-    glow(img, (60, H - 120), 320, (230, 40, 70), 30)
+    glow(img, (W - 120, 90), 380, (200, 60, 90), 60)
+    glow(img, (60, H - 120), 320, (200, 60, 90), 30)
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([18, 18, W - 18, H - 18], 34, outline=(*GOLD_D, 110), width=2)
 
