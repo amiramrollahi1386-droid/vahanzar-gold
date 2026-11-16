@@ -22,11 +22,17 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements.txt
+      - name: Install Python 3.12 if needed
+        shell: cmd
+        run: |
+          if not exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+            curl.exe -fL https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe -o "%RUNNER_TEMP%\python-3.12.10-amd64.exe"
+            start /wait "" "%RUNNER_TEMP%\python-3.12.10-amd64.exe" /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0 TargetDir="%LOCALAPPDATA%\Programs\Python\Python312"
+          )
+          echo %LOCALAPPDATA%\Programs\Python\Python312>>%GITHUB_PATH%
+          echo %LOCALAPPDATA%\Programs\Python\Python312\Scripts>>%GITHUB_PATH%
+          "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" --version
+      - run: python -m pip install -r requirements.txt
       - name: Send prices
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
