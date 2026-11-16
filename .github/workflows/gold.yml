@@ -25,6 +25,19 @@ jobs:
         shell: cmd
     steps:
       - uses: actions/checkout@v5
+      - name: Start runner after sign-in
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runnerRoot = Split-Path (Split-Path $env:RUNNER_TEMP -Parent) -Parent
+          $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"Set-Location -LiteralPath '$runnerRoot'; & '$runnerRoot\run.cmd'`"" -WorkingDirectory $runnerRoot
+          $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+          $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+          $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+          Register-ScheduledTask -TaskName "Vahan Zar Runner" -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+          Write-Output "Runner will auto-start after this user signs in."
       - name: Install Python 3.12 if needed
         run: |
           if not exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
