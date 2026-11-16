@@ -42,6 +42,7 @@ jobs:
           ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
           PANEL_MOBILE: ${{ secrets.PANEL_MOBILE }}   # شماره ورود پنل قدیری؛ برای گرفتن خودکار کد پیامکی
           GITHUB_TOKEN: ${{ github.token }}
+          PYTHONIOENCODING: "utf-8"
           CHANNEL_ID: "@vahanzar"
           FOOTER_TEXT: "@vahanzar"
           BRAND_NAME: "وهان زر"
